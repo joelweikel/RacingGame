@@ -13,7 +13,7 @@ constexpr glm::vec3 up{0.0f, 1.0f, 0.0f};
 constexpr std::size_t maxMarks = 3072;
 constexpr std::size_t maxSmoke = 256;
 
-constexpr const char* vertexShader = R"glsl(#version 330 core
+constexpr const char* vertexShader = R"glsl(
 layout (location = 0) in vec3 position;
 layout (location = 1) in vec2 uv;
 layout (location = 2) in float opacity;
@@ -27,7 +27,7 @@ void main() {
 }
 )glsl";
 
-constexpr const char* fragmentShader = R"glsl(#version 330 core
+constexpr const char* fragmentShader = R"glsl(
 in vec2 shape;
 in float strength;
 uniform bool uSmokePass;

@@ -1,0 +1,81 @@
+name: WebAssembly playtest
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/web.yml
+      - CMakeLists.txt
+      - assets/**
+      - src/**
+      - web/**
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the compiled game and bundled car assets to GitHub Pages
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      EMSCRIPTEN_VERSION: 7.0.1
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build the WebAssembly game
+        shell: bash
+        run: |
+          sdk="$RUNNER_TEMP/emsdk"
+          git clone --depth 1 --branch "$EMSCRIPTEN_VERSION" https://github.com/emscripten-core/emsdk.git "$sdk"
+          "$sdk/emsdk" install "$EMSCRIPTEN_VERSION"
+          "$sdk/emsdk" activate "$EMSCRIPTEN_VERSION"
+          source "$sdk/emsdk_env.sh"
+          emcmake cmake -S . -B build/web -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/web
+
+      - name: Stage the browser files
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/site"
+          for file in index.html index.js index.wasm index.data; do
+            test -s "build/web/bin/Release/$file"
+            cp "build/web/bin/Release/$file" "$RUNNER_TEMP/site/"
+          done
+
+      - name: Upload the downloadable playtest
+        uses: actions/upload-artifact@v7
+        with:
+          name: racinggame-web
+          path: ${{ runner.temp }}/site
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the Pages artifact
+        if: inputs.publish && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/site
+
+  deploy:
+    if: inputs.publish && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: github-pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

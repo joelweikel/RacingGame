@@ -8,7 +8,7 @@
 
 namespace {
 
-constexpr const char* vertexShader = R"glsl(#version 330 core
+constexpr const char* vertexShader = R"glsl(
 layout (location = 0) in vec2 position;
 layout (location = 1) in vec4 color;
 uniform vec2 uViewport;
@@ -19,7 +19,7 @@ void main() {
 }
 )glsl";
 
-constexpr const char* fragmentShader = R"glsl(#version 330 core
+constexpr const char* fragmentShader = R"glsl(
 in vec4 vertexColor;
 out vec4 pixelColor;
 void main() {

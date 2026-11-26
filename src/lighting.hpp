@@ -2,7 +2,7 @@
 
 #include <array>
 
-#include <glad/gl.h>
+#include "graphics.hpp"
 #include <glm/glm.hpp>
 
 class SunShadow {

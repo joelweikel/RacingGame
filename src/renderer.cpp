@@ -1,6 +1,8 @@
+#ifndef __EMSCRIPTEN__
 #define GLAD_GL_IMPLEMENTATION
 #include <glad/gl.h>
 #undef GLAD_GL_IMPLEMENTATION
+#endif
 
 #include "renderer.hpp"
 #include "shader.hpp"
@@ -23,7 +25,7 @@ constexpr glm::vec3 axle{0.0f, 0.0f, 1.0f};
 constexpr float pi = 3.14159265f;
 const glm::vec3 sunDirection = glm::normalize(glm::vec3(0.981f, 0.125f, 0.15f));
 
-constexpr const char* vertexShader = R"glsl(#version 330 core
+constexpr const char* vertexShader = R"glsl(
 layout (location = 0) in vec3 position;
 layout (location = 1) in vec3 normal;
 
@@ -188,7 +190,13 @@ void main() {
 
 void compileShader(GLuint shader, const char* source)
 {
-    glShaderSource(shader, 1, &source, nullptr);
+#ifdef __EMSCRIPTEN__
+    constexpr const char* header = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n";
+#else
+    constexpr const char* header = "#version 330 core\n";
+#endif
+    const char* sources[]{header, source};
+    glShaderSource(shader, 2, sources, nullptr);
     glCompileShader(shader);
     GLint success = GL_FALSE;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
@@ -329,8 +337,8 @@ Renderer::Renderer(const CarAsset& asset) : ground_(makeGround(asset.groundHeigh
         wheel_.emplace_back(part);
     }
 
-    const std::string materialCode = std::string("#version 330 core\n") + skyLighting + materialFragment;
-    const std::string skyCode = std::string("#version 330 core\n") + skyLighting + skyFragment;
+    const std::string materialCode = std::string(skyLighting) + materialFragment;
+    const std::string skyCode = std::string(skyLighting) + skyFragment;
     program_ = createShaderProgram(vertexShader, materialCode.c_str());
     try {
         skyProgram_ = createShaderProgram(fullscreenVertex, skyCode.c_str());

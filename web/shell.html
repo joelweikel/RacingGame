@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RacingGame</title>
+  <link rel="icon" href="data:,">
+  <style>
+    body {
+      margin: 0;
+      height: 100dvh;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      background: #12181d;
+      color: #dce5e8;
+      font: 14px/1.5 system-ui, sans-serif;
+    }
+    #viewport { position: relative; overflow: hidden; }
+    canvas { display: block; }
+    #status { position: absolute; z-index: 1; inset: 1rem auto auto 1rem; margin: 0; }
+    footer { padding: 0.55rem 0.85rem; text-align: center; }
+  </style>
+</head>
+<body>
+  <main id="viewport">
+    <p id="status" role="status">Loading RacingGame…</p>
+    <canvas id="canvas" tabindex="0" aria-label="RacingGame"></canvas>
+  </main>
+  <footer>Click to focus · WASD / arrows to drive · Right mouse look · Space handbrake · Shift brake · Q/E gears · M auto · N day/night · R reset · 1 SlimRider · 2 Gale</footer>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const statusElement = document.getElementById('status');
+    let errorMessage = '';
+    canvas.addEventListener('pointerdown', () => canvas.focus());
+    canvas.addEventListener('contextmenu', event => event.preventDefault());
+    var Module = {
+      canvas,
+      printErr(message) {
+        if (!message) return;
+        console.error(message);
+        errorMessage = message;
+        Module.setStatus(message);
+      },
+      setStatus(message) {
+        const text = errorMessage || message;
+        statusElement.textContent = text;
+        statusElement.hidden = !text;
+      },
+      onRuntimeInitialized() {
+        Module.setStatus('');
+      },
+    };
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

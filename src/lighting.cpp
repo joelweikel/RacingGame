@@ -7,11 +7,15 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/html5_webgl.h>
+#endif
+
 namespace {
 
 constexpr int shadowResolution = 2048;
 
-constexpr const char* shadowVertex = R"glsl(#version 330 core
+constexpr const char* shadowVertex = R"glsl(
 layout (location = 0) in vec3 position;
 uniform mat4 uLightMatrix;
 uniform mat4 uModel;
@@ -20,11 +24,11 @@ void main() {
 }
 )glsl";
 
-constexpr const char* shadowFragment = R"glsl(#version 330 core
+constexpr const char* shadowFragment = R"glsl(
 void main() {}
 )glsl";
 
-constexpr const char* downsampleFragment = R"glsl(#version 330 core
+constexpr const char* downsampleFragment = R"glsl(
 in vec2 clipPosition;
 uniform sampler2D uInput;
 uniform bool uExtractHighlights;
@@ -61,7 +65,7 @@ void main() {
 }
 )glsl";
 
-constexpr const char* upsampleFragment = R"glsl(#version 330 core
+constexpr const char* upsampleFragment = R"glsl(
 in vec2 clipPosition;
 uniform sampler2D uInput;
 out vec4 pixelColor;
@@ -77,7 +81,7 @@ void main() {
 }
 )glsl";
 
-constexpr const char* presentFragment = R"glsl(#version 330 core
+constexpr const char* presentFragment = R"glsl(
 in vec2 clipPosition;
 uniform sampler2D uScene;
 uniform sampler2D uGlow;
@@ -134,10 +138,11 @@ void main() {
 }
 )glsl";
 
-void allocateTexture(GLuint texture, GLint internalFormat, GLenum format, int width, int height, GLint filter)
+void allocateTexture(GLuint texture, GLint internalFormat, GLenum format, GLenum type,
+                     int width, int height, GLint filter)
 {
     glBindTexture(GL_TEXTURE_2D, texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format, GL_FLOAT, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format, type, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -166,10 +171,12 @@ SunShadow::SunShadow()
     model_ = glGetUniformLocation(program_, "uModel");
     glGenFramebuffers(1, &framebuffer_);
     glGenTextures(1, &depth_);
-    allocateTexture(depth_, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, shadowResolution, shadowResolution, GL_NEAREST);
+    allocateTexture(depth_, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT,
+                    shadowResolution, shadowResolution, GL_NEAREST);
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depth_, 0);
-    glDrawBuffer(GL_NONE);
+    constexpr GLenum noColor = GL_NONE;
+    glDrawBuffers(1, &noColor);
     glReadBuffer(GL_NONE);
     try {
         checkFramebuffer("Could not create sun shadow map");
@@ -264,8 +271,20 @@ void PostProcess::resize(int width, int height)
     width_ = width;
     height_ = height;
     glActiveTexture(GL_TEXTURE0);
-    allocateTexture(scene_, GL_RGB16F, GL_RGB, width_, height_, GL_LINEAR);
-    allocateTexture(depth_, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, width_, height_, GL_NEAREST);
+#ifdef __EMSCRIPTEN__
+    // WebGL can render to RGBA16F with this extension. Use RGBA8 otherwise.
+    const bool hdr = emscripten_webgl_enable_extension(emscripten_webgl_get_current_context(), "EXT_color_buffer_float");
+    const GLint colorStorage = hdr ? GL_RGBA16F : GL_RGBA8;
+    constexpr GLenum colorFormat = GL_RGBA;
+    const GLenum colorType = hdr ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE;
+#else
+    constexpr GLint colorStorage = GL_RGB16F;
+    constexpr GLenum colorFormat = GL_RGB;
+    constexpr GLenum colorType = GL_FLOAT;
+#endif
+    allocateTexture(scene_, colorStorage, colorFormat, colorType, width_, height_, GL_LINEAR);
+    allocateTexture(depth_, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT,
+                    width_, height_, GL_NEAREST);
     glBindFramebuffer(GL_FRAMEBUFFER, sceneFrame_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, scene_, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depth_, 0);
@@ -275,7 +294,7 @@ void PostProcess::resize(int width, int height)
         const auto divisor = 2 << i;
         const glm::ivec2 size{std::max(1, width / divisor), std::max(1, height / divisor)};
         glowSizes_[i] = size;
-        allocateTexture(glow_[i], GL_RGB16F, GL_RGB, size.x, size.y, GL_LINEAR);
+        allocateTexture(glow_[i], colorStorage, colorFormat, colorType, size.x, size.y, GL_LINEAR);
         glBindFramebuffer(GL_FRAMEBUFFER, glowFrames_[i]);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, glow_[i], 0);
         checkFramebuffer("Could not create bloom framebuffer");

@@ -5,7 +5,7 @@
 #include "lighting.hpp"
 #include "tire_effects.hpp"
 
-#include <glad/gl.h>
+#include "graphics.hpp"
 
 struct ChaseCamera {
     float yaw = 0.0f;

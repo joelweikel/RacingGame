@@ -4,7 +4,7 @@
 
 #include <deque>
 
-#include <glad/gl.h>
+#include "graphics.hpp"
 
 class TireEffects {
 public:

@@ -5,7 +5,7 @@
 #include <string_view>
 #include <vector>
 
-#include <glad/gl.h>
+#include "graphics.hpp"
 
 class Hud {
 public:

@@ -3,6 +3,11 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#ifdef __EMSCRIPTEN__
+#include <GLFW/emscripten_glfw3.h>
+#include <emscripten/emscripten.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -46,7 +51,9 @@ struct CameraInput {
         const bool dragging = glfwGetWindowAttrib(window, GLFW_FOCUSED) &&
                               glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
         if (dragging != looking) {
+#ifndef __EMSCRIPTEN__
             glfwSetInputMode(window, GLFW_CURSOR, dragging ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+#endif
             glfwGetCursorPos(window, &previousCursor.x, &previousCursor.y);
             looking = dragging;
         }
@@ -314,61 +321,29 @@ void smokeTestGale(const CarAsset& asset, Renderer& renderer, TireEffects& effec
               << asset.wheel.size() << " wheel primitives. AWD and automatic upshift verified.\n";
 }
 
-void run(const std::filesystem::path& assets, CarModel model, bool smoke)
-{
-    CarAsset asset = loadCar(assets / carSpec(model).assetFile, model);
-    const bool hasGale = std::filesystem::is_regular_file(assets / carSpec(CarModel::Gale).assetFile);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-    glfwWindowHint(GLFW_VISIBLE, smoke ? GLFW_FALSE : GLFW_TRUE);
+using Window = std::unique_ptr<GLFWwindow, decltype(&glfwDestroyWindow)>;
 
-    const std::unique_ptr<GLFWwindow, decltype(&glfwDestroyWindow)> window(
-        glfwCreateWindow(1280, 720, "RacingGame", nullptr, nullptr),
-        glfwDestroyWindow);
-    if (!window) {
-        throw std::runtime_error("Could not create an OpenGL 3.3 window");
-    }
-    glfwMakeContextCurrent(window.get());
-    if (!gladLoadGL(glfwGetProcAddress) || !GLAD_GL_VERSION_3_3) {
-        throw std::runtime_error("Could not load OpenGL 3.3");
-    }
-    glfwSwapInterval(smoke ? 0 : 1);
-
-    auto renderer = std::make_unique<Renderer>(asset);
-    TireEffects effects;
-    if (smoke) {
-        if (model == CarModel::Gale) {
-            smokeTestGale(asset, *renderer, effects, window.get());
-        } else {
-            smokeTest(asset, *renderer, effects, window.get());
-        }
-        return;
+class Game {
+public:
+    Game(Window gameWindow, const std::filesystem::path& assetDirectory, CarAsset initialAsset)
+        : window(std::move(gameWindow)), assets(assetDirectory), asset(std::move(initialAsset)),
+          hasGale(std::filesystem::is_regular_file(assets / carSpec(CarModel::Gale).assetFile)),
+          renderer(std::make_unique<Renderer>(asset))
+    {
+        updateTitle();
     }
 
-    const auto updateTitle = [&] {
-        std::string title(carSpec(asset.model).name);
-        title += " | Right mouse look   Space handbrake   Shift brake   Q/E gears   M auto   N day/night";
-        if (hasGale) {
-            title += "   1 SlimRider   2 Gale";
-        }
-        glfwSetWindowTitle(window.get(), title.c_str());
-    };
-    updateTitle();
-
-    CarState car;
-    ChaseCamera camera;
-    CameraInput cameraInput;
-    ActionKeys previousKeys;
-    bool night = false;
-    double previousTime = glfwGetTime();
-    double accumulator = 0.0;
-    while (!glfwWindowShouldClose(window.get())) {
+    bool frame()
+    {
         glfwPollEvents();
-        if (pressed(window.get(), GLFW_KEY_ESCAPE)) {
-            break;
+        if (glfwWindowShouldClose(window.get())) {
+            return false;
         }
+#ifndef __EMSCRIPTEN__
+        if (pressed(window.get(), GLFW_KEY_ESCAPE)) {
+            return false;
+        }
+#endif
 
         const double now = glfwGetTime();
         const double frameTime = std::min(now - previousTime, 0.1);
@@ -426,11 +401,105 @@ void run(const std::filesystem::path& assets, CarModel model, bool smoke)
         glfwGetFramebufferSize(window.get(), &width, &height);
         if (width > 0 && height > 0) {
             renderer->render(asset, car, camera, effects, width, height, night);
+#ifndef __EMSCRIPTEN__
             glfwSwapBuffers(window.get());
         } else {
             glfwWaitEventsTimeout(0.05);
+#endif
         }
+        return true;
     }
+
+private:
+    void updateTitle() const
+    {
+        std::string title(carSpec(asset.model).name);
+        title += " | Right mouse look   Space handbrake   Shift brake   Q/E gears   M auto   N day/night";
+        if (hasGale) {
+            title += "   1 SlimRider   2 Gale";
+        }
+        glfwSetWindowTitle(window.get(), title.c_str());
+    }
+
+    Window window;
+    std::filesystem::path assets;
+    CarAsset asset;
+    bool hasGale;
+    std::unique_ptr<Renderer> renderer;
+    TireEffects effects;
+    CarState car;
+    ChaseCamera camera;
+    CameraInput cameraInput;
+    ActionKeys previousKeys;
+    bool night = false;
+    double previousTime = glfwGetTime();
+    double accumulator = 0.0;
+};
+
+void run(const std::filesystem::path& assets, CarModel model, bool smoke)
+{
+    CarAsset asset = loadCar(assets / carSpec(model).assetFile, model);
+#ifdef __EMSCRIPTEN__
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2); // The browser port takes the WebGL version.
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+#else
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+#endif
+    glfwWindowHint(GLFW_VISIBLE, smoke ? GLFW_FALSE : GLFW_TRUE);
+
+    Window window(glfwCreateWindow(1280, 720, "RacingGame", nullptr, nullptr), glfwDestroyWindow);
+    if (!window) {
+        throw std::runtime_error("Could not create the graphics window");
+    }
+    glfwMakeContextCurrent(window.get());
+#ifndef __EMSCRIPTEN__
+    if (!gladLoadGL(glfwGetProcAddress) || !GLAD_GL_VERSION_3_3) {
+        throw std::runtime_error("Could not load OpenGL 3.3");
+    }
+    glfwSwapInterval(smoke ? 0 : 1);
+#endif
+
+    if (smoke) {
+        Renderer renderer(asset);
+        TireEffects effects;
+        if (model == CarModel::Gale) {
+            smokeTestGale(asset, renderer, effects, window.get());
+        } else {
+            smokeTest(asset, renderer, effects, window.get());
+        }
+        return;
+    }
+
+#ifdef __EMSCRIPTEN__
+    emscripten::glfw3::MakeCanvasResizable(window.get(), "#viewport");
+    glfwSetMouseButtonCallback(window.get(), [](GLFWwindow* handle, int button, int action, int) {
+        if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+            glfwSetInputMode(handle, GLFW_CURSOR, action == GLFW_PRESS ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+        }
+    });
+    auto game = std::make_unique<Game>(std::move(window), assets, std::move(asset));
+    emscripten_set_main_loop_arg([](void* argument) {
+        auto* activeGame = static_cast<Game*>(argument);
+        try {
+            if (activeGame->frame()) {
+                return;
+            }
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << '\n';
+        }
+        emscripten_cancel_main_loop();
+        delete activeGame;
+        glfwTerminate();
+    }, game.release(), 0, false);
+#else
+    Game game(std::move(window), assets, std::move(asset));
+    while (game.frame()) {
+    }
+#endif
 }
 
 } // namespace
@@ -443,9 +512,8 @@ int main(int argc, char** argv)
     }
 
     int result = 0;
+    bool smoke = false;
     try {
-        const std::filesystem::path executable = std::filesystem::absolute(argv[0]);
-        bool smoke = false;
         CarModel model = CarModel::SlimRider;
         for (int i = 1; i < argc; ++i) {
             const std::string_view argument(argv[i]);
@@ -455,12 +523,23 @@ int main(int argc, char** argv)
                 model = CarModel::Gale;
             }
         }
+#ifdef __EMSCRIPTEN__
+        run("/assets", model, smoke);
+#else
+        const std::filesystem::path executable = std::filesystem::absolute(argv[0]);
         run(executable.parent_path() / "assets", model, smoke);
+#endif
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         result = 1;
     }
 
+#ifdef __EMSCRIPTEN__
+    if (smoke || result != 0) {
+        glfwTerminate();
+    }
+#else
     glfwTerminate();
+#endif
     return result;
 }
