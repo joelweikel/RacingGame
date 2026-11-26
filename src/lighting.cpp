@@ -89,6 +89,7 @@ uniform sampler2D uDepth;
 uniform vec3 uSunScreen;
 uniform float uAspect;
 uniform float uSpeedEffect;
+uniform vec3 uRipple;
 out vec4 pixelColor;
 
 float clearSky(vec2 uv) {
@@ -123,11 +124,21 @@ vec3 flare(vec2 uv) {
 
 void main() {
     vec2 uv = clipPosition * 0.5 + 0.5;
+    float ring = 0.0;
+    if (uRipple.z >= 0.0 && uRipple.z < 1.0) {
+        vec2 delta = (uv - uRipple.xy) * vec2(uAspect, 1.0);
+        float radius = length(delta);
+        float front = radius - (0.025 + 1.82 * uRipple.z);
+        float envelope = exp(-front * front * 265.0) * (1.0 - uRipple.z);
+        float wave = sin(front * 64.0) * envelope;
+        uv += delta * (wave * 0.052 / max(radius, 0.015)) / vec2(uAspect, 1.0);
+        ring = exp(-front * front * 1050.0) * (1.0 - uRipple.z);
+    }
     vec3 scene = texture(uScene, uv).rgb;
     if (any(isnan(scene)) || any(isinf(scene))) {
         scene = vec3(0.094, 0.108, 0.119);
     }
-    vec3 color = scene + texture(uGlow, uv).rgb * 0.40 + flare(uv);
+    vec3 color = scene + texture(uGlow, uv).rgb * 0.40 + flare(uv) + ring * vec3(0.24, 0.61, 0.85);
     float peak = max(color.r, max(color.g, color.b));
     float highlight = max(0.0, peak - 0.82);
     float compressed = min(peak, 0.82) + 0.18 * (1.0 - exp(-highlight / 0.49));
@@ -241,6 +252,7 @@ PostProcess::PostProcess()
     sunScreen_ = glGetUniformLocation(presentProgram_, "uSunScreen");
     aspect_ = glGetUniformLocation(presentProgram_, "uAspect");
     speedEffect_ = glGetUniformLocation(presentProgram_, "uSpeedEffect");
+    ripple_ = glGetUniformLocation(presentProgram_, "uRipple");
     glUseProgram(presentProgram_);
     glUniform1i(glGetUniformLocation(presentProgram_, "uGlow"), 1);
     glUniform1i(glGetUniformLocation(presentProgram_, "uDepth"), 2);
@@ -315,7 +327,7 @@ void PostProcess::drawFullscreen() const
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
-void PostProcess::present(const glm::vec3& sunScreen, float speedEffect)
+void PostProcess::present(const glm::vec3& sunScreen, float speedEffect, const glm::vec3& ripple)
 {
     glDisable(GL_DEPTH_TEST);
     glBindVertexArray(array_);
@@ -348,6 +360,7 @@ void PostProcess::present(const glm::vec3& sunScreen, float speedEffect)
     glUniform3fv(sunScreen_, 1, glm::value_ptr(sunScreen));
     glUniform1f(aspect_, static_cast<float>(width_) / height_);
     glUniform1f(speedEffect_, speedEffect);
+    glUniform3fv(ripple_, 1, glm::value_ptr(ripple));
     drawFullscreen();
     glActiveTexture(GL_TEXTURE0);
     glEnable(GL_DEPTH_TEST);

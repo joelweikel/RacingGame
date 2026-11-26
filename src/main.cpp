@@ -1,7 +1,6 @@
-#include "renderer.hpp"
-
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
+#include "audio.hpp"
+#include "hud.hpp"
+#include "menu.hpp"
 
 #ifdef __EMSCRIPTEN__
 #include <GLFW/emscripten_glfw3.h>
@@ -23,30 +22,11 @@ namespace {
 
 constexpr float fixedStep = 1.0f / 120.0f;
 
-bool pressed(GLFWwindow* window, int key)
-{
-    return glfwGetKey(window, key) == GLFW_PRESS;
-}
-
-DriveInput readInput(GLFWwindow* window)
-{
-    const bool accelerate = pressed(window, GLFW_KEY_W) || pressed(window, GLFW_KEY_UP);
-    const bool reverse = pressed(window, GLFW_KEY_S) || pressed(window, GLFW_KEY_DOWN);
-    const bool left = pressed(window, GLFW_KEY_A) || pressed(window, GLFW_KEY_LEFT);
-    const bool right = pressed(window, GLFW_KEY_D) || pressed(window, GLFW_KEY_RIGHT);
-    return {
-        static_cast<float>(accelerate) - static_cast<float>(reverse),
-        static_cast<float>(left) - static_cast<float>(right),
-        pressed(window, GLFW_KEY_LEFT_SHIFT) || pressed(window, GLFW_KEY_RIGHT_SHIFT),
-        pressed(window, GLFW_KEY_SPACE),
-    };
-}
-
 struct CameraInput {
     bool looking = false;
     glm::dvec2 previousCursor{0.0};
 
-    void update(GLFWwindow* window, ChaseCamera& camera, float dt)
+    void update(GLFWwindow* window, ChaseCamera& camera, float dt, glm::vec2 look)
     {
         const bool dragging = glfwGetWindowAttrib(window, GLFW_FOCUSED) &&
                               glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
@@ -59,21 +39,14 @@ struct CameraInput {
         }
         glm::dvec2 cursor;
         glfwGetCursorPos(window, &cursor.x, &cursor.y);
-        camera.update(glm::vec2(cursor - previousCursor), looking, dt);
+        const auto delta = looking ? glm::vec2(cursor - previousCursor) : look * (390.0f * dt);
+        camera.update(delta, looking || glm::length(look) > 0.0f, dt);
         previousCursor = cursor;
     }
 };
 
-struct ActionKeys {
-    bool down = false;
-    bool up = false;
-    bool mode = false;
-    bool night = false;
-    bool slimRider = false;
-    bool gale = false;
-};
-
-void smokeTest(const CarAsset& asset, Renderer& renderer, TireEffects& effects, GLFWwindow* window)
+void smokeTest(const CarAsset& asset, Renderer& renderer, TireEffects& effects, GLFWwindow* window,
+               const std::filesystem::path& assets)
 {
     CarState car;
     effects.update(asset, car, fixedStep);
@@ -195,9 +168,13 @@ void smokeTest(const CarAsset& asset, Renderer& renderer, TireEffects& effects, 
     std::array<unsigned char, 4> skyPixel{};
     glReadPixels(12, 12, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, groundPixel.data());
     glReadPixels(12, height - 12, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, skyPixel.data());
-    const float scale = std::min({height / 720.0f, width / 425.0f, 2.0f});
+    UiDraw ui(assets);
+    ui.begin(width, height);
+    drawHud(ui, car, carSpec(asset.model), courseName(Course::TestGrid), false);
+    ui.finish();
+    const auto accent = ui.toScreen({1100, 533});
     std::array<unsigned char, 4> hudPixel{};
-    glReadPixels(width - static_cast<int>(100.0f * scale), static_cast<int>(135.0f * scale),
+    glReadPixels(static_cast<int>(accent.x), height - static_cast<int>(accent.y),
                  1, 1, GL_RGBA, GL_UNSIGNED_BYTE, hudPixel.data());
     if (glGetError() != GL_NO_ERROR || skyPixel[2] <= groundPixel[2] + 25 ||
         hudPixel[0] > 150 || hudPixel[1] < 200) {
@@ -326,111 +303,133 @@ using Window = std::unique_ptr<GLFWwindow, decltype(&glfwDestroyWindow)>;
 class Game {
 public:
     Game(Window gameWindow, const std::filesystem::path& assetDirectory, CarAsset initialAsset)
-        : window(std::move(gameWindow)), assets(assetDirectory), asset(std::move(initialAsset)),
-          hasGale(std::filesystem::is_regular_file(assets / carSpec(CarModel::Gale).assetFile)),
-          renderer(std::make_unique<Renderer>(asset))
+        : window(std::move(gameWindow)), assets(assetDirectory), controls(window.get()),
+          menu(initialAsset.model, std::filesystem::is_regular_file(assets / carSpec(CarModel::Gale).assetFile)),
+          ui(assets)
     {
-        updateTitle();
+        const auto i = static_cast<std::size_t>(initialAsset.model);
+        cars[i] = std::move(initialAsset);
+        renderers[i] = std::make_unique<Renderer>(cars[i]);
     }
 
     bool frame()
     {
         glfwPollEvents();
-        if (glfwWindowShouldClose(window.get())) {
-            return false;
-        }
-#ifndef __EMSCRIPTEN__
-        if (pressed(window.get(), GLFW_KEY_ESCAPE)) {
-            return false;
-        }
-#endif
+        if (glfwWindowShouldClose(window.get())) return false;
 
         const double now = glfwGetTime();
-        const double frameTime = std::min(now - previousTime, 0.1);
-        accumulator += frameTime;
+        const float dt = static_cast<float>(std::clamp(now - previousTime, 0.0, 0.1));
         previousTime = now;
 
-        const ActionKeys keys{pressed(window.get(), GLFW_KEY_Q), pressed(window.get(), GLFW_KEY_E),
-                              pressed(window.get(), GLFW_KEY_M), pressed(window.get(), GLFW_KEY_N),
-                              pressed(window.get(), GLFW_KEY_1), pressed(window.get(), GLFW_KEY_2)};
-        CarModel selected = asset.model;
-        if (keys.slimRider && !previousKeys.slimRider) {
-            selected = CarModel::SlimRider;
-        } else if (hasGale && keys.gale && !previousKeys.gale) {
-            selected = CarModel::Gale;
-        }
-        const bool switched = selected != asset.model;
-        if (switched) {
-            try {
-                CarAsset nextAsset = loadCar(assets / carSpec(selected).assetFile, selected);
-                renderer = std::make_unique<Renderer>(nextAsset);
-                asset = std::move(nextAsset);
-                updateTitle();
-            } catch (const std::exception& error) {
-                std::cerr << "Could not switch to " << carSpec(selected).name << ". " << error.what() << '\n';
-            }
-        }
-        if ((switched && selected == asset.model) || pressed(window.get(), GLFW_KEY_R)) {
-            car = {};
-            camera = {};
-            effects.clear();
-            accumulator = 0.0;
-        }
-        if (keys.mode && !previousKeys.mode) {
-            car.automatic = !car.automatic;
-        }
-        if (keys.night && !previousKeys.night) {
-            night = !night;
-        }
-        const int shift = static_cast<int>(keys.up && !previousKeys.up) - static_cast<int>(keys.down && !previousKeys.down);
-        if (shift != 0) {
-            shiftGear(car, shift);
-        }
-        previousKeys = keys;
-        cameraInput.update(window.get(), camera, static_cast<float>(frameTime));
-        const DriveInput input = readInput(window.get());
-        while (accumulator >= fixedStep) {
-            drive(car, asset, input, fixedStep);
-            effects.update(asset, car, fixedStep);
-            accumulator -= fixedStep;
-        }
-        camera.updateSpeed(glm::length(car.velocity), static_cast<float>(frameTime));
-
-        int width = 0;
-        int height = 0;
+        int width = 0, height = 0, displayWidth = 0, displayHeight = 0;
         glfwGetFramebufferSize(window.get(), &width, &height);
-        if (width > 0 && height > 0) {
-            renderer->render(asset, car, camera, effects, width, height, night);
+        glfwGetWindowSize(window.get(), &displayWidth, &displayHeight);
+        if (width <= 0 || height <= 0 || displayWidth <= 0 || displayHeight <= 0) {
 #ifndef __EMSCRIPTEN__
-            glfwSwapBuffers(window.get());
-        } else {
             glfwWaitEventsTimeout(0.05);
 #endif
+            return true;
         }
+
+        ui.begin(width, height);
+        controls.poll();
+        const auto cursor = controls.menu().cursor * glm::vec2(
+            static_cast<float>(width) / displayWidth, static_cast<float>(height) / displayHeight);
+        menu.update(controls, ui.fromScreen(cursor), dt);
+        if (menu.screen() != lastScreen) {
+            lastScreen = menu.screen();
+            updateTitle();
+        }
+        const bool driving = menu.screen() == Screen::Drive;
+        controls.setMouseLook(driving);
+        if (menu.takeRaceStart()) {
+            reset();
+            night = false;
+        }
+
+        const SceneView view = menu.scene(ui, width, height);
+        const auto model = menu.displayedCar();
+        const std::size_t i = static_cast<std::size_t>(model);
+        const CarAsset& asset = sceneAsset(model, i);
+        const DriveInput input = driving ? controls.drive() : DriveInput{};
+        if (driving) {
+            if (controls.justPressed(Action::Reset)) reset();
+            if (controls.justPressed(Action::Automatic)) car.automatic = !car.automatic;
+            if (controls.justPressed(Action::Night)) night = !night;
+            const int shift = static_cast<int>(controls.justPressed(Action::GearUp)) -
+                              static_cast<int>(controls.justPressed(Action::GearDown));
+            if (shift != 0) shiftGear(car, shift);
+            const auto look = controls.look();
+            cameraInput.update(window.get(), camera, dt, look);
+            accumulator += dt;
+            while (accumulator >= fixedStep) {
+                drive(car, asset, input, fixedStep);
+                effects.update(asset, car, fixedStep);
+                accumulator -= fixedStep;
+            }
+            camera.updateSpeed(glm::length(car.velocity), dt);
+        }
+        audio.update(model, car, input, driving);
+
+        ChaseCamera orbit;
+        orbit.yaw = 2.34f + 0.34f * std::sin(menu.time() * 0.66f);
+        orbit.pitch = -0.065f + 0.04f * std::sin(menu.time() * 0.81f);
+        renderers[i]->render(asset, view.menu ? CarState{} : car, view.menu ? orbit : camera,
+                             effects, width, height, !view.menu && night, view);
+        if (!view.menu) {
+            drawHud(ui, car, carSpec(menu.playerCar()), courseName(menu.course()), controls.usingGamepad());
+        }
+        menu.draw(ui, controls);
+        ui.finish();
+#ifndef __EMSCRIPTEN__
+        glfwSwapBuffers(window.get());
+#endif
         return true;
     }
 
 private:
     void updateTitle() const
     {
-        std::string title(carSpec(asset.model).name);
-        title += " | Right mouse look   Space handbrake   Shift brake   Q/E gears   M auto   N day/night";
-        if (hasGale) {
-            title += "   1 SlimRider   2 Gale";
+        const std::array<const char*, 7> sections{"", "Main Menu", "Car Select", "Map Select", "Controls", "", "Paused"};
+        std::string title = sections[static_cast<std::size_t>(lastScreen)];
+        if (lastScreen == Screen::Drive) {
+            title = std::string(carSpec(menu.playerCar()).name) + " | " + std::string(courseName(menu.course()));
         }
+        if (!title.empty()) title += " | ";
+        title += "Racing Game";
         glfwSetWindowTitle(window.get(), title.c_str());
+    }
+
+    void reset()
+    {
+        car = {};
+        camera = {};
+        effects.clear();
+        accumulator = 0.0;
+    }
+
+    const CarAsset& sceneAsset(CarModel model, std::size_t i)
+    {
+        if (!renderers[i]) {
+            cars[i] = loadCar(assets / carSpec(model).assetFile, model);
+            renderers[i] = std::make_unique<Renderer>(cars[i]);
+        }
+        return cars[i];
     }
 
     Window window;
     std::filesystem::path assets;
-    CarAsset asset;
-    bool hasGale;
-    std::unique_ptr<Renderer> renderer;
+    Controls controls;
+    Menu menu;
+    UiDraw ui;
+    std::array<CarAsset, 2> cars;
+    std::array<std::unique_ptr<Renderer>, 2> renderers;
     TireEffects effects;
+    GameAudio audio;
     CarState car;
     ChaseCamera camera;
     CameraInput cameraInput;
-    ActionKeys previousKeys;
+    Screen lastScreen = Screen::Splash;
     bool night = false;
     double previousTime = glfwGetTime();
     double accumulator = 0.0;
@@ -451,7 +450,7 @@ void run(const std::filesystem::path& assets, CarModel model, bool smoke)
 #endif
     glfwWindowHint(GLFW_VISIBLE, smoke ? GLFW_FALSE : GLFW_TRUE);
 
-    Window window(glfwCreateWindow(1280, 720, "RacingGame", nullptr, nullptr), glfwDestroyWindow);
+    Window window(glfwCreateWindow(1280, 720, "Racing Game", nullptr, nullptr), glfwDestroyWindow);
     if (!window) {
         throw std::runtime_error("Could not create the graphics window");
     }
@@ -469,7 +468,7 @@ void run(const std::filesystem::path& assets, CarModel model, bool smoke)
         if (model == CarModel::Gale) {
             smokeTestGale(asset, renderer, effects, window.get());
         } else {
-            smokeTest(asset, renderer, effects, window.get());
+            smokeTest(asset, renderer, effects, window.get(), assets);
         }
         return;
     }
@@ -477,7 +476,8 @@ void run(const std::filesystem::path& assets, CarModel model, bool smoke)
 #ifdef __EMSCRIPTEN__
     emscripten::glfw3::MakeCanvasResizable(window.get(), "#viewport");
     glfwSetMouseButtonCallback(window.get(), [](GLFWwindow* handle, int button, int action, int) {
-        if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+        const auto* controls = static_cast<const Controls*>(glfwGetWindowUserPointer(handle));
+        if (controls && controls->mouseLook() && button == GLFW_MOUSE_BUTTON_RIGHT) {
             glfwSetInputMode(handle, GLFW_CURSOR, action == GLFW_PRESS ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
         }
     });

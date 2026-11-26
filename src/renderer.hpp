@@ -1,7 +1,6 @@
 #pragma once
 
 #include "driving.hpp"
-#include "hud.hpp"
 #include "lighting.hpp"
 #include "tire_effects.hpp"
 
@@ -18,6 +17,16 @@ struct ChaseCamera {
     void updateSpeed(float metersPerSecond, float dt);
 };
 
+enum class Course { TestGrid, DustlineOval };
+
+struct SceneView {
+    Course course = Course::TestGrid;
+    bool menu = false;
+    bool showCar = true;
+    float time = 0.0f;
+    glm::vec3 ripple{0.0f, 0.0f, -1.0f};
+};
+
 class Renderer {
 public:
     explicit Renderer(const CarAsset& asset);
@@ -27,7 +36,7 @@ public:
     Renderer& operator=(const Renderer&) = delete;
 
     void render(const CarAsset& asset, const CarState& car, const ChaseCamera& camera,
-                TireEffects& effects, int width, int height, bool night = false);
+                TireEffects& effects, int width, int height, bool night = false, const SceneView& scene = {});
 
 private:
     class MeshBuffer {
@@ -57,7 +66,6 @@ private:
     std::vector<MeshBuffer> body_;
     std::vector<MeshBuffer> wheel_;
     MeshBuffer ground_;
-    Hud hud_;
     SunShadow shadow_;
     PostProcess post_;
     GLuint program_ = 0;
@@ -71,10 +79,14 @@ private:
     GLint lensTint_ = -1;
     GLint eye_ = -1;
     GLint groundPass_ = -1;
+    GLint course_ = -1;
+    GLint menuLight_ = -1;
     GLint night_ = -1;
     GLint sunDirection_ = -1;
     GLint lightMatrix_ = -1;
     GLint skyClipToWorld_ = -1;
     GLint skyNight_ = -1;
     GLint skySunDirection_ = -1;
+    GLint menuSky_ = -1;
+    GLint menuTime_ = -1;
 };

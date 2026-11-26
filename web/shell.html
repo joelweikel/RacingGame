@@ -9,30 +9,54 @@
     body {
       margin: 0;
       height: 100dvh;
-      display: grid;
-      grid-template-rows: minmax(0, 1fr) auto;
-      background: #12181d;
-      color: #dce5e8;
+      background: #102a46;
+      color: #eaffff;
       font: 14px/1.5 system-ui, sans-serif;
     }
-    #viewport { position: relative; overflow: hidden; }
-    canvas { display: block; }
-    #status { position: absolute; z-index: 1; inset: 1rem auto auto 1rem; margin: 0; }
-    footer { padding: 0.55rem 0.85rem; text-align: center; }
+    #viewport { position: relative; overflow: hidden; width: 100%; height: 100%; }
+    canvas { display: block; outline: none; }
+    #status {
+      position: absolute;
+      z-index: 1;
+      inset: 0;
+      margin: 0;
+      place-content: center;
+      text-align: center;
+      background: linear-gradient(141deg, #102a46 22%, #255f78 56%, #102a46 84%);
+      background-size: 180% 180%;
+      animation: sweep 3s ease-in-out infinite alternate;
+    }
+    #status:not([hidden]) { display: grid; }
+    #status strong { font-size: clamp(2.5rem, 8vw, 6rem); font-style: italic; line-height: 1.07; }
+    #loadMessage { color: #99eae8; }
+    @keyframes sweep { to { background-position: 100% 80%; } }
+    @media (prefers-reduced-motion: reduce) { #status { animation: none; } }
   </style>
 </head>
 <body>
   <main id="viewport">
-    <p id="status" role="status">Loading RacingGame…</p>
+    <div id="status" role="status">
+      <strong>RACING GAME</strong>
+      <span id="loadMessage">Loading…</span>
+    </div>
     <canvas id="canvas" tabindex="0" aria-label="RacingGame"></canvas>
   </main>
-  <footer>Click to focus · WASD / arrows to drive · Right mouse look · Space handbrake · Shift brake · Q/E gears · M auto · N day/night · R reset · 1 SlimRider · 2 Gale</footer>
   <script>
     const canvas = document.getElementById('canvas');
     const statusElement = document.getElementById('status');
+    const loadMessage = document.getElementById('loadMessage');
     let errorMessage = '';
     canvas.addEventListener('pointerdown', () => canvas.focus());
     canvas.addEventListener('contextmenu', event => event.preventDefault());
+    function unlockKeyboardAudio(event) {
+      // miniaudio registers click/touch unlock handlers. Keyboard-only players also
+      // need a trusted DOM gesture to resume the Web Audio context.
+      if (event.isTrusted && window.miniaudio?.devices?.length) {
+        window.miniaudio.unlock();
+        window.removeEventListener('keydown', unlockKeyboardAudio, true);
+      }
+    }
+    window.addEventListener('keydown', unlockKeyboardAudio, true);
     var Module = {
       canvas,
       printErr(message) {
@@ -43,11 +67,12 @@
       },
       setStatus(message) {
         const text = errorMessage || message;
-        statusElement.textContent = text;
+        loadMessage.textContent = text;
         statusElement.hidden = !text;
       },
       onRuntimeInitialized() {
         Module.setStatus('');
+        canvas.focus({ preventScroll: true });
       },
     };
   </script>

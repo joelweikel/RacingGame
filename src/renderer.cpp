@@ -72,6 +72,8 @@ uniform vec4 uSurface;
 uniform vec3 uEmissive;
 uniform float uLensTint;
 uniform bool uGroundPass;
+uniform bool uMenuLight;
+uniform int uCourse;
 uniform sampler2D uShadowMap;
 uniform mat4 uLightMatrix;
 
@@ -81,6 +83,7 @@ float sunlight(vec3 normal) {
     if (uNight) {
         return 0.0;
     }
+    if (uMenuLight) return 1.0;
     vec3 uv = (uLightMatrix * vec4(worldPosition, 1.0)).xyz * 0.5 + 0.5;
     if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0)))) {
         return 1.0;
@@ -110,6 +113,24 @@ void main() {
         vec2 lines = 1.0 - smoothstep(vec2(0.0), width, abs(fract(grid + 0.5) - 0.5));
         float line = max(lines.x, lines.y) * (1.0 - smoothstep(12.0, 55.0, distanceToEye));
         vec3 asphalt = mix(uColor, vec3(0.15, 0.19, 0.205), line * 0.68);
+        if (uCourse == 1) {
+            vec2 oval = worldPosition.xz - vec2(0.0, 26.0);
+            vec2 turn = vec2(max(abs(oval.x) - 46.0, 0.0), oval.y);
+            float distanceOnTrack = length(turn) - 26.0;
+            float edge = abs(distanceOnTrack);
+            float aa = max(fwidth(distanceOnTrack), 0.025);
+            float curb = 1.0 - smoothstep(0.38, 0.38 + aa, abs(edge - 5.2));
+            float paved = 1.0 - smoothstep(5.4 - aa, 5.8 + aa, edge);
+            float sand = 0.5 + 0.25 * sin(oval.x * 0.91 + oval.y * 0.35) * cos(oval.y * 0.83 - oval.x * 0.21);
+            asphalt = mix(mix(vec3(0.41, 0.25, 0.15), vec3(0.52, 0.34, 0.21), sand),
+                          vec3(0.083, 0.097, 0.116), paved);
+            float distanceStripe = abs(oval.x) < 46.0 ? oval.x : atan(turn.y, turn.x) * 26.0;
+            asphalt = mix(asphalt, mix(vec3(0.87, 0.78, 0.60), vec3(0.50, 0.12, 0.08),
+                          step(0.5, fract(distanceStripe * 0.56))), curb);
+            float start = (1.0 - smoothstep(0.30, 0.30 + aa, abs(oval.x - 12.0))) * paved;
+            float checker = mod(floor(oval.x * 5.0) + floor(oval.y * 3.0), 2.0);
+            asphalt = mix(asphalt, mix(vec3(0.22), vec3(0.78), checker), start);
+        }
         asphalt *= uNight ? vec3(0.19, 0.25, 0.32) : vec3(mix(0.44, 1.0, sunlight(vec3(0.0, 1.0, 0.0))));
         pixelColor = vec4(mix(asphalt, skyRadiance(-view), fog), 1.0);
         return;
@@ -155,6 +176,8 @@ void main() {
 constexpr const char* skyFragment = R"glsl(
 in vec2 clipPosition;
 uniform mat4 uClipToWorld;
+uniform bool uMenu;
+uniform float uTime;
 out vec4 pixelColor;
 
 float hash(vec2 p) {
@@ -170,6 +193,34 @@ float noise(vec2 p) {
 }
 
 void main() {
+    if (uMenu) {
+        vec2 p = clipPosition * 0.5 + 0.5;
+        float wave = sin(p.x * 5.2 - uTime * 0.32) * 0.060 + sin(p.x * 2.5 + uTime * 0.19) * 0.075;
+        float sweep = p.y + p.x * 0.48 + wave;
+        float dither = (hash(mod(gl_FragCoord.xy, 128.0)) - 0.5) * 0.026;
+        float blue = smoothstep(0.75, 0.88, sweep + dither);
+        vec3 tone = mix(vec3(0.76, 0.88, 0.92), vec3(0.057, 0.29, 0.49), blue);
+        float ribbon = 1.0 - smoothstep(0.009, 0.014, abs(sweep - 0.755));
+        float inner = 1.0 - smoothstep(0.024, 0.028, abs(sweep - 0.865));
+        tone = mix(tone, vec3(0.24, 0.86, 0.86), ribbon * 0.72);
+        tone = mix(tone, vec3(0.15, 0.53, 0.68), inner * 0.49);
+        vec2 cell = fract(gl_FragCoord.xy / 6.0) - 0.5;
+        float dotField = (1.0 - smoothstep(0.13, 0.34, length(cell))) *
+                         smoothstep(0.69, 0.80, sweep) * (1.0 - smoothstep(0.92, 1.09, sweep));
+        tone *= 1.0 - dotField * 0.20 + dither * 0.75;
+        float halo = 1.0 - smoothstep(0.02, 0.54, length((p - vec2(0.77, 0.51)) * vec2(0.8, 1.0)));
+        tone += halo * vec3(0.10, 0.17, 0.19);
+        float speed = fract(p.x * 0.75 + p.y * 5.0 + uTime * 0.15);
+        tone += vec3(0.055, 0.095, 0.12) * (1.0 - smoothstep(0.0, 0.021, abs(speed - 0.47))) * blue;
+        float road = p.y + 0.24 * p.x + 0.035 * sin(5.0 * p.x + uTime * 0.27);
+        float thinStripe = 1.0 - smoothstep(0.002, 0.004, abs(road - 0.349));
+        float broadStripe = 1.0 - smoothstep(0.016, 0.019, abs(road - 0.315));
+        tone = mix(tone, vec3(0.38, 0.74, 0.77), (thinStripe * 0.30 + broadStripe * 0.36) * smoothstep(0.45, 0.96, p.x));
+        float paper = (1.0 - smoothstep(0.05, 0.55, p.x)) * 0.41;
+        tone = mix(tone, vec3(0.79, 0.90, 0.94), paper);
+        pixelColor = vec4(tone, 1.0);
+        return;
+    }
     vec3 ray = normalize((uClipToWorld * vec4(clipPosition, 1.0, 1.0)).xyz);
     vec3 sky = skyRadiance(ray);
     if (ray.y > 0.0) {
@@ -358,9 +409,13 @@ Renderer::Renderer(const CarAsset& asset) : ground_(makeGround(asset.groundHeigh
     lensTint_ = glGetUniformLocation(program_, "uLensTint");
     eye_ = glGetUniformLocation(program_, "uEye");
     groundPass_ = glGetUniformLocation(program_, "uGroundPass");
+    course_ = glGetUniformLocation(program_, "uCourse");
+    menuLight_ = glGetUniformLocation(program_, "uMenuLight");
     night_ = glGetUniformLocation(program_, "uNight");
     sunDirection_ = glGetUniformLocation(program_, "uSunDirection");
     lightMatrix_ = glGetUniformLocation(program_, "uLightMatrix");
+    menuSky_ = glGetUniformLocation(skyProgram_, "uMenu");
+    menuTime_ = glGetUniformLocation(skyProgram_, "uTime");
     glEnable(GL_DEPTH_TEST);
 }
 
@@ -387,13 +442,13 @@ void Renderer::draw(const MeshBuffer& mesh, const glm::mat4& model, bool night, 
 }
 
 void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCamera& camera,
-                      TireEffects& effects, int width, int height, bool night)
+                      TireEffects& effects, int width, int height, bool night, const SceneView& scene)
 {
     const glm::mat4 identity(1.0f);
     const glm::vec3 direction = forward(car.heading);
     const glm::vec3 orbit = forward(car.heading + camera.yaw);
     const float pitch = 0.35f + camera.pitch;
-    constexpr float cameraDistance = 7.2f;
+    const float cameraDistance = scene.menu ? 6.1f : 7.2f;
     const glm::vec3 focus = car.position + up * (0.45f + car.suspension.heave * 0.30f);
     const glm::vec3 cameraSide = glm::cross(orbit, up);
     const float phase = camera.vibrationPhase;
@@ -406,7 +461,16 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
     const glm::mat4 view = glm::lookAt(eye, target, up);
     const float fov = 56.0f + 5.5f * camera.speedEffect;
-    const glm::mat4 projection = glm::perspective(glm::radians(fov), aspect, 0.05f, 530.0f);
+    constexpr float menuAspect = 1280.0f / 720.0f;
+    glm::mat4 projection = glm::perspective(glm::radians(fov), scene.menu ? menuAspect : aspect, 0.05f, 530.0f);
+    if (scene.menu) {
+        const float widthFit = std::min(1.0f, menuAspect / aspect);
+        const float heightFit = std::min(1.0f, aspect / menuAspect);
+        projection[0][0] *= widthFit;
+        projection[1][1] *= heightFit;
+        projection[2][0] = -0.43f * widthFit;
+        projection[2][1] = -0.02f * heightFit;
+    }
     const glm::mat4 viewProjection = projection * view;
 
     const glm::mat4 baseModel = glm::rotate(glm::translate(identity, car.position), car.heading, up);
@@ -443,7 +507,7 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
         }
     };
     glm::mat4 lightMatrix(1.0f);
-    if (!night) {
+    if (!night && !scene.menu) {
         lightMatrix = shadow_.begin(car.position, sunDirection);
         drawOpaque([&](const MeshBuffer& part, const glm::mat4& model) {
             shadow_.setModel(model);
@@ -459,24 +523,34 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     const glm::mat4 clipToSky = glm::inverse(projection * glm::mat4(glm::mat3(view)));
     glUniformMatrix4fv(skyClipToWorld_, 1, GL_FALSE, glm::value_ptr(clipToSky));
     glUniform1i(skyNight_, night ? GL_TRUE : GL_FALSE);
+    glUniform1i(menuSky_, scene.menu ? GL_TRUE : GL_FALSE);
+    glUniform1f(menuTime_, scene.time);
     glUniform3fv(skySunDirection_, 1, glm::value_ptr(sunDirection));
     glBindVertexArray(skyArray_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glEnable(GL_DEPTH_TEST);
+    if (scene.menu && !scene.showCar) {
+        post_.present(glm::vec3(0.0f), 0.0f, scene.ripple);
+        return;
+    }
 
     glUseProgram(program_);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, shadow_.depthTexture());
     glUniform1i(night_, night ? GL_TRUE : GL_FALSE);
+    glUniform1i(menuLight_, scene.menu ? GL_TRUE : GL_FALSE);
+    glUniform1i(course_, static_cast<int>(scene.course));
     glUniform3fv(sunDirection_, 1, glm::value_ptr(sunDirection));
     glUniformMatrix4fv(lightMatrix_, 1, GL_FALSE, glm::value_ptr(lightMatrix));
     glUniform3fv(eye_, 1, glm::value_ptr(eye));
     glUniformMatrix4fv(viewProjection_, 1, GL_FALSE, glm::value_ptr(viewProjection));
 
-    glUniform1i(groundPass_, GL_TRUE);
-    draw(ground_, identity, night, false);
-    effects.renderMarks(viewProjection);
-    glUseProgram(program_);
+    if (!scene.menu) {
+        glUniform1i(groundPass_, GL_TRUE);
+        draw(ground_, identity, night, false);
+        effects.renderMarks(viewProjection);
+        glUseProgram(program_);
+    }
     glUniform1i(groundPass_, GL_FALSE);
 
     drawOpaque([&](const MeshBuffer& part, const glm::mat4& model) {
@@ -507,12 +581,11 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
 
-    effects.renderSmoke(viewProjection, view, eye, night);
+    if (!scene.menu) effects.renderSmoke(viewProjection, view, eye, night);
     const glm::vec4 projectedSun = viewProjection * glm::vec4(sunDirection, 0.0f);
     glm::vec3 sunScreen(0.0f);
-    if (!night && projectedSun.w > 0.0f) {
+    if (!night && !scene.menu && projectedSun.w > 0.0f) {
         sunScreen = glm::vec3(glm::vec2(projectedSun) * (0.5f / projectedSun.w) + 0.5f, 1.0f);
     }
-    post_.present(sunScreen, camera.speedEffect);
-    hud_.render(car, spec.torqueCurve.back().rpm, width, height);
+    post_.present(sunScreen, camera.speedEffect, scene.ripple);
 }
