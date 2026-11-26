@@ -18,4 +18,4 @@ python -m http.server 8765 --bind 127.0.0.1 --directory build/web/bin/Release
 
 Open [the local playtest](http://127.0.0.1:8765/) and click the canvas to focus it. The WebAssembly build preloads the GLBs, so rebuild when an asset changes.
 
-GitHub Actions builds the same game for changes on `main` and uploads `racinggame-web`. To publish on a Pages-eligible repository, set the Pages source to **GitHub Actions**, then run **WebAssembly playtest** from `main` with **Publish the compiled game and bundled car assets to GitHub Pages** enabled.
+GitHub Actions rebuilds the playtest when the game changes on `main`, uploads `racinggame-web`, and deploys the browser files to [GitHub Pages](https://joelweikel.github.io/RacingGame/). Run **WebAssembly playtest** manually from `main` to redeploy it.
