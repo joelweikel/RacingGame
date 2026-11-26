@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/site"
-          for file in index.html index.js index.wasm index.data; do
+          for file in index.html index.js index.wasm index.data audio-credits.txt; do
             test -s "build/web/bin/Release/$file"
             cp "build/web/bin/Release/$file" "$RUNNER_TEMP/site/"
           done

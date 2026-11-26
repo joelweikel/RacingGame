@@ -24,7 +24,7 @@ FetchContent_MakeAvailable(glm cgltf nlohmann_json stb miniaudio)
 
 add_executable(RacingGame
     src/main.cpp src/car.cpp src/driving.cpp src/renderer.cpp src/hud.cpp src/tire_effects.cpp src/lighting.cpp
-    src/audio.cpp src/controls.cpp src/menu.cpp src/ui_draw.cpp)
+    src/audio.cpp src/engine_sound.cpp src/controls.cpp src/menu.cpp src/ui_draw.cpp)
 target_compile_features(RacingGame PRIVATE cxx_std_17)
 target_include_directories(RacingGame SYSTEM PRIVATE "${cgltf_SOURCE_DIR}" "${stb_SOURCE_DIR}" "${miniaudio_SOURCE_DIR}")
 target_link_libraries(RacingGame PRIVATE glm::glm nlohmann_json::nlohmann_json)
@@ -36,7 +36,14 @@ set(ui_assets
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/Barlow-SemiBold.ttf"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/BarlowCondensed-ExtraBoldItalic.ttf"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/Barlow-OFL.txt")
-set(game_assets "${car_asset}" ${gale_asset} ${ui_assets})
+set(audio_credits "${CMAKE_CURRENT_SOURCE_DIR}/assets/audio-credits.txt")
+set(audio_assets
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-2977.wav"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-4438.wav"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-6040.wav"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-7252.wav"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/tire-squeal.wav")
+set(game_assets "${car_asset}" ${gale_asset} ${ui_assets} ${audio_assets})
 if(EMSCRIPTEN)
     set(web_shell "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html")
     set_target_properties(RacingGame PROPERTIES OUTPUT_NAME index SUFFIX ".html")
@@ -49,7 +56,10 @@ if(EMSCRIPTEN)
         get_filename_component(asset_name "${asset}" NAME)
         target_link_options(RacingGame PRIVATE "SHELL:--preload-file \"${asset}@/assets/${asset_name}\"")
     endforeach()
-    set_property(TARGET RacingGame APPEND PROPERTY LINK_DEPENDS "${web_shell}" ${game_assets})
+    set_property(TARGET RacingGame APPEND PROPERTY LINK_DEPENDS "${web_shell}" "${audio_credits}" ${game_assets})
+    add_custom_command(TARGET RacingGame POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${audio_credits}" "$<TARGET_FILE_DIR:RacingGame>/audio-credits.txt"
+        VERBATIM)
     return()
 endif()
 
@@ -62,8 +72,8 @@ endif()
 set(asset_output "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/assets")
 add_custom_target(racing_assets
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${asset_output}"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${game_assets} "${asset_output}"
-    DEPENDS ${game_assets}
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${game_assets} "${audio_credits}" "${asset_output}"
+    DEPENDS ${game_assets} "${audio_credits}"
     VERBATIM)
 add_dependencies(RacingGame racing_assets)
 

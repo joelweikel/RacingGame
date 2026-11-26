@@ -305,7 +305,7 @@ public:
     Game(Window gameWindow, const std::filesystem::path& assetDirectory, CarAsset initialAsset)
         : window(std::move(gameWindow)), assets(assetDirectory), controls(window.get()),
           menu(initialAsset.model, std::filesystem::is_regular_file(assets / carSpec(CarModel::Gale).assetFile)),
-          ui(assets)
+          ui(assets), audio(assets)
     {
         const auto i = static_cast<std::size_t>(initialAsset.model);
         cars[i] = std::move(initialAsset);

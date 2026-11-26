@@ -1,0 +1,19 @@
+RacingGame audio credits
+
+Gale engine recordings
+  Ferrari 458 Italia and Ferrari F430 (2010), recorded by Edvvc at Goodwood.
+  https://commons.wikimedia.org/wiki/File:Ferrari_458_Italia.ogg
+  https://commons.wikimedia.org/wiki/File:Ferrari_F430_(2010).ogg
+  RPM-tracked loop edits by ssabeeth for V8 Engine Explorer.
+  https://github.com/ssabeeth/v8-engine-explorer/blob/main/src/42_samples.js
+  RacingGame converted the four loops to mono 24 kHz PCM and level-matched them.
+  The four adapted WAV assets are licensed under CC BY-SA 3.0.
+  https://creativecommons.org/licenses/by-sa/3.0/
+
+Tire squeal
+  Car tire squeal skid loop by audible-edge (Tom Haigh), loop edit by qubodup.
+  https://opengameart.org/content/car-tire-squeal-skid-loop
+  https://freesound.org/people/audible-edge/sounds/71739/
+  RacingGame filtered, crossfaded, resampled, and level-matched the loop.
+  The adapted tire-squeal.wav asset is licensed under CC BY 3.0.
+  https://creativecommons.org/licenses/by/3.0/

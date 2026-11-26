@@ -2,11 +2,12 @@
 
 #include "driving.hpp"
 
+#include <filesystem>
 #include <memory>
 
 class GameAudio {
 public:
-    GameAudio();
+    explicit GameAudio(const std::filesystem::path& assets);
     ~GameAudio();
     GameAudio(const GameAudio&) = delete;
     GameAudio& operator=(const GameAudio&) = delete;
