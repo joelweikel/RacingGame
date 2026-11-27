@@ -35,7 +35,9 @@ file(GLOB gale_asset CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale.
 set(ui_assets
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/Barlow-SemiBold.ttf"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/BarlowCondensed-ExtraBoldItalic.ttf"
-    "${CMAKE_CURRENT_SOURCE_DIR}/assets/Barlow-OFL.txt")
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/Barlow-OFL.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/Spectral-BoldItalic.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/Spectral-OFL.txt")
 set(audio_credits "${CMAKE_CURRENT_SOURCE_DIR}/assets/audio-credits.txt")
 set(audio_assets
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-2977.wav"

@@ -90,6 +90,7 @@ uniform vec3 uSunScreen;
 uniform float uAspect;
 uniform float uSpeedEffect;
 uniform vec3 uRipple;
+uniform bool uMenu;
 out vec4 pixelColor;
 
 float clearSky(vec2 uv) {
@@ -122,6 +123,11 @@ vec3 flare(vec2 uv) {
                         blue * vec3(0.31, 0.66, 1.0) + red * vec3(1.0, 0.36, 0.14));
 }
 
+float compressPeak(float peak) {
+    float highlight = max(0.0, peak - 0.82);
+    return min(peak, 0.82) + 0.18 * (1.0 - exp(-highlight / 0.49));
+}
+
 void main() {
     vec2 uv = clipPosition * 0.5 + 0.5;
     float ring = 0.0;
@@ -140,9 +146,8 @@ void main() {
     }
     vec3 color = scene + texture(uGlow, uv).rgb * 0.40 + flare(uv) + ring * vec3(0.24, 0.61, 0.85);
     float peak = max(color.r, max(color.g, color.b));
-    float highlight = max(0.0, peak - 0.82);
-    float compressed = min(peak, 0.82) + 0.18 * (1.0 - exp(-highlight / 0.49));
-    vec3 mapped = max(vec3(0.0), color * compressed / max(peak, 0.001));
+    vec3 mapped = max(vec3(0.0), color * compressPeak(peak) / max(peak, 0.001));
+    if (uMenu) mapped /= compressPeak(1.0);
     float edge = smoothstep(0.34, 0.72, length((uv - 0.5) * vec2(1.08, 1.0)));
     mapped *= 1.0 - 0.31 * uSpeedEffect * edge;
     pixelColor = vec4(pow(mapped, vec3(1.0 / 2.2)), 1.0);
@@ -253,6 +258,7 @@ PostProcess::PostProcess()
     aspect_ = glGetUniformLocation(presentProgram_, "uAspect");
     speedEffect_ = glGetUniformLocation(presentProgram_, "uSpeedEffect");
     ripple_ = glGetUniformLocation(presentProgram_, "uRipple");
+    menu_ = glGetUniformLocation(presentProgram_, "uMenu");
     glUseProgram(presentProgram_);
     glUniform1i(glGetUniformLocation(presentProgram_, "uGlow"), 1);
     glUniform1i(glGetUniformLocation(presentProgram_, "uDepth"), 2);
@@ -327,7 +333,7 @@ void PostProcess::drawFullscreen() const
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
-void PostProcess::present(const glm::vec3& sunScreen, float speedEffect, const glm::vec3& ripple)
+void PostProcess::present(const glm::vec3& sunScreen, float speedEffect, const glm::vec3& ripple, bool menu)
 {
     glDisable(GL_DEPTH_TEST);
     glBindVertexArray(array_);
@@ -361,6 +367,7 @@ void PostProcess::present(const glm::vec3& sunScreen, float speedEffect, const g
     glUniform1f(aspect_, static_cast<float>(width_) / height_);
     glUniform1f(speedEffect_, speedEffect);
     glUniform3fv(ripple_, 1, glm::value_ptr(ripple));
+    glUniform1i(menu_, menu ? GL_TRUE : GL_FALSE);
     drawFullscreen();
     glActiveTexture(GL_TEXTURE0);
     glEnable(GL_DEPTH_TEST);

@@ -1,4 +1,4 @@
-# RacingGame
+# MMORP Racer
 
 A WIP multiplayer party racing game set in the MMORP universe. Planned targets are WebAssembly, Wii U, and native PC with advanced graphics.
 

@@ -5,4 +5,5 @@
 
 #include <string_view>
 
-void drawHud(UiDraw& ui, const CarState& car, const CarSpec& spec, std::string_view course, bool controller);
+void drawHud(UiDraw& ui, const CarState& car, CarModel model, std::string_view course,
+             std::string_view pauseKey, bool active);

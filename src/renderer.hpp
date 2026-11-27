@@ -23,7 +23,9 @@ struct SceneView {
     Course course = Course::TestGrid;
     bool menu = false;
     bool showCar = true;
+    bool titleDrift = false;
     float time = 0.0f;
+    float menuColor = 1.0f;
     glm::vec3 ripple{0.0f, 0.0f, -1.0f};
 };
 
@@ -89,4 +91,5 @@ private:
     GLint skySunDirection_ = -1;
     GLint menuSky_ = -1;
     GLint menuTime_ = -1;
+    GLint menuColor_ = -1;
 };

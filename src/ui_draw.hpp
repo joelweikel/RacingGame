@@ -11,7 +11,9 @@
 #include <glm/glm.hpp>
 
 inline constexpr glm::vec2 uiSize{1280.0f, 720.0f};
-enum class UiFont { Label, Display };
+inline constexpr char gameTitle[] = "MMORP Racer";
+inline constexpr glm::vec4 uiAccentBlue{0.16f, 0.50f, 0.98f, 1.0f};
+enum class UiFont { Label, Display, SpectralSpeed };
 
 struct UiBox {
     float x, y, w, h;
@@ -29,9 +31,14 @@ public:
     void begin(int width, int height);
     glm::vec2 fromScreen(glm::vec2 p) const;
     glm::vec2 toScreen(glm::vec2 p) const;
+    UiBox viewportBounds() const;
     void finish();
     void rect(UiBox box, glm::vec4 color);
     void gradient(UiBox box, glm::vec4 top, glm::vec4 bottom);
+    void roundedGradient(UiBox box, float radius, glm::vec4 top, glm::vec4 bottom);
+    void beveled(UiBox box, float radius, glm::vec4 top, glm::vec4 bottom,
+                 glm::vec4 rimTop, glm::vec4 rimBottom);
+    void bloom(UiBox source, glm::vec4 color);
     void rounded(UiBox box, float radius, glm::vec4 color);
     void line(glm::vec2 from, glm::vec2 to, float thickness, glm::vec4 color);
     void arc(glm::vec2 center, glm::vec2 radius, float start, float end, float thickness, glm::vec4 color);
@@ -51,11 +58,18 @@ private:
     };
     void quad(const Vertex& a, const Vertex& b, const Vertex& c, const Vertex& d);
     void triangle(glm::vec2 a, glm::vec2 b, glm::vec2 c, glm::vec4 color);
+    void drawVertices(const std::vector<Vertex>& vertices) const;
+    void drawBloom();
+    void resizeBloom(glm::ivec2 size);
 
-    std::array<std::array<Glyph, 95>, 2> glyphs_{};
-    std::vector<Vertex> vertices_;
+    std::array<std::array<Glyph, 95>, 3> glyphs_{};
+    std::vector<Vertex> vertices_, lights_;
     glm::vec2 viewport_{uiSize}, origin_{0.0f};
+    glm::ivec2 bloomSize_{0};
     float scale_ = 1.0f;
     GLuint program_ = 0, vao_ = 0, buffer_ = 0, atlas_ = 0;
+    GLuint blurProgram_ = 0;
+    std::array<GLuint, 2> bloomFrames_{}, bloomTextures_{};
     GLint viewportUniform_ = -1, scaleUniform_ = -1, originUniform_ = -1;
+    GLint blurStep_ = -1;
 };

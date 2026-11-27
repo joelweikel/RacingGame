@@ -178,6 +178,7 @@ in vec2 clipPosition;
 uniform mat4 uClipToWorld;
 uniform bool uMenu;
 uniform float uTime;
+uniform float uMenuColor;
 out vec4 pixelColor;
 
 float hash(vec2 p) {
@@ -199,26 +200,26 @@ void main() {
         float sweep = p.y + p.x * 0.48 + wave;
         float dither = (hash(mod(gl_FragCoord.xy, 128.0)) - 0.5) * 0.026;
         float blue = smoothstep(0.75, 0.88, sweep + dither);
-        vec3 tone = mix(vec3(0.76, 0.88, 0.92), vec3(0.057, 0.29, 0.49), blue);
+        vec3 tone = mix(vec3(0.83, 0.91, 0.96), vec3(0.25, 0.52, 0.71), blue);
         float ribbon = 1.0 - smoothstep(0.009, 0.014, abs(sweep - 0.755));
         float inner = 1.0 - smoothstep(0.024, 0.028, abs(sweep - 0.865));
-        tone = mix(tone, vec3(0.24, 0.86, 0.86), ribbon * 0.72);
-        tone = mix(tone, vec3(0.15, 0.53, 0.68), inner * 0.49);
+        tone = mix(tone, vec3(0.40, 0.75, 0.91), ribbon * 0.72);
+        tone = mix(tone, vec3(0.42, 0.68, 0.84), inner * 0.49);
         vec2 cell = fract(gl_FragCoord.xy / 6.0) - 0.5;
         float dotField = (1.0 - smoothstep(0.13, 0.34, length(cell))) *
                          smoothstep(0.69, 0.80, sweep) * (1.0 - smoothstep(0.92, 1.09, sweep));
         tone *= 1.0 - dotField * 0.20 + dither * 0.75;
         float halo = 1.0 - smoothstep(0.02, 0.54, length((p - vec2(0.77, 0.51)) * vec2(0.8, 1.0)));
-        tone += halo * vec3(0.10, 0.17, 0.19);
+        tone += halo * vec3(0.086, 0.10, 0.12);
         float speed = fract(p.x * 0.75 + p.y * 5.0 + uTime * 0.15);
         tone += vec3(0.055, 0.095, 0.12) * (1.0 - smoothstep(0.0, 0.021, abs(speed - 0.47))) * blue;
         float road = p.y + 0.24 * p.x + 0.035 * sin(5.0 * p.x + uTime * 0.27);
         float thinStripe = 1.0 - smoothstep(0.002, 0.004, abs(road - 0.349));
         float broadStripe = 1.0 - smoothstep(0.016, 0.019, abs(road - 0.315));
-        tone = mix(tone, vec3(0.38, 0.74, 0.77), (thinStripe * 0.30 + broadStripe * 0.36) * smoothstep(0.45, 0.96, p.x));
+        tone = mix(tone, vec3(0.47, 0.75, 0.90), (thinStripe * 0.30 + broadStripe * 0.36) * smoothstep(0.45, 0.96, p.x));
         float paper = (1.0 - smoothstep(0.05, 0.55, p.x)) * 0.41;
-        tone = mix(tone, vec3(0.79, 0.90, 0.94), paper);
-        pixelColor = vec4(tone, 1.0);
+        tone = mix(tone, vec3(0.87, 0.94, 0.98), paper);
+        pixelColor = vec4(mix(vec3(1.0), tone, uMenuColor), 1.0);
         return;
     }
     vec3 ray = normalize((uClipToWorld * vec4(clipPosition, 1.0, 1.0)).xyz);
@@ -416,6 +417,7 @@ Renderer::Renderer(const CarAsset& asset) : ground_(makeGround(asset.groundHeigh
     lightMatrix_ = glGetUniformLocation(program_, "uLightMatrix");
     menuSky_ = glGetUniformLocation(skyProgram_, "uMenu");
     menuTime_ = glGetUniformLocation(skyProgram_, "uTime");
+    menuColor_ = glGetUniformLocation(skyProgram_, "uMenuColor");
     glEnable(GL_DEPTH_TEST);
 }
 
@@ -448,7 +450,7 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     const glm::vec3 direction = forward(car.heading);
     const glm::vec3 orbit = forward(car.heading + camera.yaw);
     const float pitch = 0.35f + camera.pitch;
-    const float cameraDistance = scene.menu ? 6.1f : 7.2f;
+    const float cameraDistance = scene.titleDrift ? 5.65f : (scene.menu ? 6.1f : 7.2f);
     const glm::vec3 focus = car.position + up * (0.45f + car.suspension.heave * 0.30f);
     const glm::vec3 cameraSide = glm::cross(orbit, up);
     const float phase = camera.vibrationPhase;
@@ -469,7 +471,7 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
         projection[0][0] *= widthFit;
         projection[1][1] *= heightFit;
         projection[2][0] = -0.43f * widthFit;
-        projection[2][1] = -0.02f * heightFit;
+        projection[2][1] = (scene.titleDrift ? 0.10f : -0.02f) * heightFit;
     }
     const glm::mat4 viewProjection = projection * view;
 
@@ -525,12 +527,13 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     glUniform1i(skyNight_, night ? GL_TRUE : GL_FALSE);
     glUniform1i(menuSky_, scene.menu ? GL_TRUE : GL_FALSE);
     glUniform1f(menuTime_, scene.time);
+    glUniform1f(menuColor_, scene.menuColor);
     glUniform3fv(skySunDirection_, 1, glm::value_ptr(sunDirection));
     glBindVertexArray(skyArray_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glEnable(GL_DEPTH_TEST);
     if (scene.menu && !scene.showCar) {
-        post_.present(glm::vec3(0.0f), 0.0f, scene.ripple);
+        post_.present(glm::vec3(0.0f), 0.0f, scene.ripple, scene.menu);
         return;
     }
 
@@ -549,6 +552,10 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
         glUniform1i(groundPass_, GL_TRUE);
         draw(ground_, identity, night, false);
         effects.renderMarks(viewProjection);
+        glUseProgram(program_);
+    } else if (scene.titleDrift) {
+        effects.renderContactShadow(asset, car, viewProjection);
+        effects.renderMarks(viewProjection, 100);
         glUseProgram(program_);
     }
     glUniform1i(groundPass_, GL_FALSE);
@@ -581,11 +588,11 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
 
-    if (!scene.menu) effects.renderSmoke(viewProjection, view, eye, night);
+    if (!scene.menu || scene.titleDrift) effects.renderSmoke(viewProjection, view, eye, night);
     const glm::vec4 projectedSun = viewProjection * glm::vec4(sunDirection, 0.0f);
     glm::vec3 sunScreen(0.0f);
     if (!night && !scene.menu && projectedSun.w > 0.0f) {
         sunScreen = glm::vec3(glm::vec2(projectedSun) * (0.5f / projectedSun.w) + 0.5f, 1.0f);
     }
-    post_.present(sunScreen, camera.speedEffect, scene.ripple);
+    post_.present(sunScreen, camera.speedEffect, scene.ripple, scene.menu);
 }

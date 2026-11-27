@@ -33,7 +33,7 @@ public:
     PostProcess& operator=(const PostProcess&) = delete;
 
     void begin(int width, int height);
-    void present(const glm::vec3& sunScreen, float speedEffect, const glm::vec3& ripple);
+    void present(const glm::vec3& sunScreen, float speedEffect, const glm::vec3& ripple, bool menu);
 
 private:
     void resize(int width, int height);
@@ -57,4 +57,5 @@ private:
     GLint aspect_ = -1;
     GLint speedEffect_ = -1;
     GLint ripple_ = -1;
+    GLint menu_ = -1;
 };

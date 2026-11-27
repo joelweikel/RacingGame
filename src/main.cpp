@@ -22,6 +22,56 @@ namespace {
 
 constexpr float fixedStep = 1.0f / 120.0f;
 
+struct TitleDrift {
+    CarState car;
+    TireEffects effects{400, 1.85f};
+
+    void update(const CarAsset& asset, float dt)
+    {
+        if (!primed_) {
+            // Fill the smoke trail and lay down tread before the first visible frame.
+            for (int i = 0; i < 270; ++i) advance(asset, fixedStep);
+            primed_ = true;
+        }
+        advance(asset, dt * 0.16f);
+    }
+
+    ChaseCamera camera() const
+    {
+        ChaseCamera view;
+        view.yaw = 2.16f + 0.24f * std::sin(phase_);
+        view.pitch = -0.017f + 0.035f * std::sin(phase_ * 2.0f);
+        return view;
+    }
+
+private:
+    void advance(const CarAsset& asset, float dt)
+    {
+        constexpr float radius = 14.0f;
+        constexpr float turnRate = 0.68f;
+        constexpr float tau = 6.283185307f;
+        phase_ = std::remainder(phase_ + turnRate * dt, tau);
+        car.position = radius * glm::vec3(std::sin(phase_), 0.0f, -std::cos(phase_));
+        car.velocity = forward(-phase_) * (radius * turnRate);
+        car.heading = -phase_ - 0.60f - 0.11f * std::sin(phase_);
+        car.yawRate = -turnRate * (1.0f + 0.11f * std::cos(phase_));
+        car.steering = 0.38f + 0.055f * std::sin(phase_ * 2.0f);
+        car.suspension.roll = -0.041f - 0.012f * std::sin(phase_ * 2.0f);
+        car.suspension.pitch = 0.014f * std::cos(phase_);
+        for (std::size_t i = 0; i < car.wheels.size(); ++i) {
+            auto& wheel = car.wheels[i];
+            const bool rear = i >= 2;
+            wheel.slip = rear ? 0.91f + 0.08f * std::sin(phase_ + static_cast<float>(i)) : 0.11f;
+            const float spin = (rear ? 1.42f : 1.0f) * radius * turnRate / asset.wheelRadius;
+            wheel.angle = std::remainder(wheel.angle + spin * dt, tau);
+        }
+        effects.update(asset, car, dt);
+    }
+
+    float phase_ = -1.52f;
+    bool primed_ = false;
+};
+
 struct CameraInput {
     bool looking = false;
     glm::dvec2 previousCursor{0.0};
@@ -170,14 +220,15 @@ void smokeTest(const CarAsset& asset, Renderer& renderer, TireEffects& effects, 
     glReadPixels(12, height - 12, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, skyPixel.data());
     UiDraw ui(assets);
     ui.begin(width, height);
-    drawHud(ui, car, carSpec(asset.model), courseName(Course::TestGrid), false);
+    drawHud(ui, car, asset.model, courseName(Course::TestGrid), "Esc", true);
     ui.finish();
-    const auto accent = ui.toScreen({1100, 533});
+    const auto view = ui.viewportBounds();
+    const auto accent = ui.toScreen({view.x + view.w - 264, view.y + view.h - 121});
     std::array<unsigned char, 4> hudPixel{};
     glReadPixels(static_cast<int>(accent.x), height - static_cast<int>(accent.y),
                  1, 1, GL_RGBA, GL_UNSIGNED_BYTE, hudPixel.data());
     if (glGetError() != GL_NO_ERROR || skyPixel[2] <= groundPixel[2] + 25 ||
-        hudPixel[0] > 150 || hudPixel[1] < 200) {
+        hudPixel[0] < 200 || hudPixel[1] > 120) {
         throw std::runtime_error("OpenGL scene or dashboard framebuffer check failed");
     }
 
@@ -374,10 +425,16 @@ public:
         ChaseCamera orbit;
         orbit.yaw = 2.34f + 0.34f * std::sin(menu.time() * 0.66f);
         orbit.pitch = -0.065f + 0.04f * std::sin(menu.time() * 0.81f);
-        renderers[i]->render(asset, view.menu ? CarState{} : car, view.menu ? orbit : camera,
-                             effects, width, height, !view.menu && night, view);
+        if (view.titleDrift) {
+            titleDrift.update(asset, dt);
+            renderers[i]->render(asset, titleDrift.car, titleDrift.camera(), titleDrift.effects, width, height, false, view);
+        } else {
+            renderers[i]->render(asset, view.menu ? CarState{} : car, view.menu ? orbit : camera,
+                                 effects, width, height, !view.menu && night, view);
+        }
         if (!view.menu) {
-            drawHud(ui, car, carSpec(menu.playerCar()), courseName(menu.course()), controls.usingGamepad());
+            const auto pauseBinding = controls.binding(static_cast<int>(Action::Pause), controls.usingGamepad());
+            drawHud(ui, car, menu.playerCar(), courseName(menu.course()), pauseBinding, driving);
         }
         menu.draw(ui, controls);
         ui.finish();
@@ -396,7 +453,7 @@ private:
             title = std::string(carSpec(menu.playerCar()).name) + " | " + std::string(courseName(menu.course()));
         }
         if (!title.empty()) title += " | ";
-        title += "Racing Game";
+        title += gameTitle;
         glfwSetWindowTitle(window.get(), title.c_str());
     }
 
@@ -425,6 +482,7 @@ private:
     std::array<CarAsset, 2> cars;
     std::array<std::unique_ptr<Renderer>, 2> renderers;
     TireEffects effects;
+    TitleDrift titleDrift;
     GameAudio audio;
     CarState car;
     ChaseCamera camera;
@@ -450,7 +508,7 @@ void run(const std::filesystem::path& assets, CarModel model, bool smoke)
 #endif
     glfwWindowHint(GLFW_VISIBLE, smoke ? GLFW_FALSE : GLFW_TRUE);
 
-    Window window(glfwCreateWindow(1280, 720, "Racing Game", nullptr, nullptr), glfwDestroyWindow);
+    Window window(glfwCreateWindow(1280, 720, gameTitle, nullptr, nullptr), glfwDestroyWindow);
     if (!window) {
         throw std::runtime_error("Could not create the graphics window");
     }

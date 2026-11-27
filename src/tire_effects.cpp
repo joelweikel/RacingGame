@@ -10,7 +10,6 @@
 namespace {
 
 constexpr glm::vec3 up{0.0f, 1.0f, 0.0f};
-constexpr std::size_t maxMarks = 3072;
 constexpr std::size_t maxSmoke = 256;
 
 constexpr const char* vertexShader = R"glsl(
@@ -30,7 +29,7 @@ void main() {
 constexpr const char* fragmentShader = R"glsl(
 in vec2 shape;
 in float strength;
-uniform bool uSmokePass;
+uniform int uEffectPass;
 uniform bool uNight;
 out vec4 pixelColor;
 
@@ -39,7 +38,11 @@ float lobe(vec2 center, float radius) {
 }
 
 void main() {
-    if (uSmokePass) {
+    if (uEffectPass == 2) {
+        float radius = dot(shape, shape);
+        float opacity = exp(-radius * 2.4) * (1.0 - smoothstep(0.6, 1.0, radius));
+        pixelColor = vec4(vec3(0.05), opacity * strength);
+    } else if (uEffectPass == 1) {
         float cloud = max(lobe(vec2(0.02, -0.08), 0.83), lobe(vec2(-0.33, 0.17), 0.52));
         cloud = max(cloud, 0.87 * lobe(vec2(0.29, 0.28), 0.57));
         cloud *= 0.91 + 0.09 * sin(shape.x * 13.0 + shape.y * 10.0) * cos(shape.y * 16.0);
@@ -58,14 +61,15 @@ void main() {
 
 } // namespace
 
-TireEffects::TireEffects()
+TireEffects::TireEffects(std::size_t markLimit, float smokeDensity)
+    : markLimit_(std::max<std::size_t>(1, markLimit)), smokeDensity_(smokeDensity)
 {
     smoke_.reserve(maxSmoke);
     sortedSmoke_.reserve(maxSmoke);
-    vertices_.reserve(maxMarks * 6);
+    vertices_.reserve(std::max(markLimit_, maxSmoke) * 6);
     program_ = createShaderProgram(vertexShader, fragmentShader);
     viewProjection_ = glGetUniformLocation(program_, "uViewProjection");
-    smokePass_ = glGetUniformLocation(program_, "uSmokePass");
+    effectPass_ = glGetUniformLocation(program_, "uEffectPass");
     night_ = glGetUniformLocation(program_, "uNight");
 
     glGenVertexArrays(1, &vertexArray_);
@@ -142,7 +146,7 @@ void TireEffects::update(const CarAsset& asset, const CarState& car, float dt)
                 if (glm::dot(emitter.markSide, markSide) < 0.0f) {
                     markSide = -markSide;
                 }
-                if (marks_.size() == maxMarks) {
+                if (marks_.size() == markLimit_) {
                     marks_.pop_front();
                 }
                 marks_.push_back({emitter.lastMark, contact, emitter.markSide, markSide, emitter.markOpacity, opacity});
@@ -152,8 +156,8 @@ void TireEffects::update(const CarAsset& asset, const CarState& car, float dt)
             }
         }
 
-        emitter.smokeCredit += (7.0f + 34.0f * slip) * dt;
-        if (emitter.smokeCredit >= 1.0f) {
+        emitter.smokeCredit += (7.0f + 34.0f * slip) * smokeDensity_ * dt;
+        while (emitter.smokeCredit >= 1.0f) {
             emitter.smokeCredit -= 1.0f;
             if (smoke_.size() < maxSmoke) {
                 Smoke puff;
@@ -170,12 +174,12 @@ void TireEffects::update(const CarAsset& asset, const CarState& car, float dt)
     }
 }
 
-void TireEffects::drawBatch(bool smoke)
+void TireEffects::drawBatch(Pass pass)
 {
     if (vertices_.empty()) {
         return;
     }
-    glUniform1i(smokePass_, smoke ? GL_TRUE : GL_FALSE);
+    glUniform1i(effectPass_, static_cast<GLint>(pass));
     glBufferData(GL_ARRAY_BUFFER, vertices_.size() * sizeof(EffectVertex), vertices_.data(), GL_STREAM_DRAW);
     glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size()));
 }
@@ -192,7 +196,27 @@ void TireEffects::beginBatch(const glm::mat4& viewProjection, bool night)
     glBindBuffer(GL_ARRAY_BUFFER, buffer_);
 }
 
-void TireEffects::renderMarks(const glm::mat4& viewProjection)
+void TireEffects::renderContactShadow(const CarAsset& asset, const CarState& car, const glm::mat4& viewProjection)
+{
+    const auto front = forward(car.heading);
+    const auto side = glm::cross(front, up);
+    const auto wheelSpan = asset.hubs[0] - asset.hubs[2];
+    const auto center = glm::vec3(car.position.x, asset.groundHeight, car.position.z) +
+                        front * (asset.hubs[0].x + asset.hubs[2].x) * 0.5f;
+    const auto x = front * (wheelSpan.x * 0.5f + 0.94f);
+    const auto y = side * (std::abs(asset.hubs[0].z) + 0.52f);
+    const EffectVertex a{center - x - y, {-1, -1}, 0.67f};
+    const EffectVertex b{center + x - y, {1, -1}, 0.67f};
+    const EffectVertex c{center + x + y, {1, 1}, 0.67f};
+    const EffectVertex d{center - x + y, {-1, 1}, 0.67f};
+    beginBatch(viewProjection, false);
+    vertices_.assign({a, b, c, a, c, d});
+    drawBatch(Pass::Shadow);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+}
+
+void TireEffects::renderMarks(const glm::mat4& viewProjection, std::size_t fadeTail)
 {
     if (marks_.empty()) {
         return;
@@ -201,14 +225,19 @@ void TireEffects::renderMarks(const glm::mat4& viewProjection)
     beginBatch(viewProjection, false);
     glDisable(GL_DEPTH_TEST);
     vertices_.clear();
+    const float fadeStep = fadeTail == 0 ? 0.0f : 1.0f / static_cast<float>(fadeTail);
+    float fade = fadeTail == 0 ? 1.0f : 0.0f;
     for (const Mark& mark : marks_) {
-        const EffectVertex startLeft{mark.start - mark.startSide, {-1.0f, 0.0f}, mark.startOpacity};
-        const EffectVertex startRight{mark.start + mark.startSide, {1.0f, 0.0f}, mark.startOpacity};
-        const EffectVertex endLeft{mark.end - mark.endSide, {-1.0f, 0.0f}, mark.endOpacity};
-        const EffectVertex endRight{mark.end + mark.endSide, {1.0f, 0.0f}, mark.endOpacity};
+        const float from = mark.startOpacity * fade;
+        fade = std::min(1.0f, fade + fadeStep);
+        const float to = mark.endOpacity * fade;
+        const EffectVertex startLeft{mark.start - mark.startSide, {-1.0f, 0.0f}, from};
+        const EffectVertex startRight{mark.start + mark.startSide, {1.0f, 0.0f}, from};
+        const EffectVertex endLeft{mark.end - mark.endSide, {-1.0f, 0.0f}, to};
+        const EffectVertex endRight{mark.end + mark.endSide, {1.0f, 0.0f}, to};
         vertices_.insert(vertices_.end(), {startLeft, startRight, endRight, startLeft, endRight, endLeft});
     }
-    drawBatch(false);
+    drawBatch(Pass::Marks);
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
@@ -248,7 +277,7 @@ void TireEffects::renderSmoke(const glm::mat4& viewProjection, const glm::mat4& 
         const EffectVertex topRight{puff->position + x + y, {1.0f, 1.0f}, opacity};
         vertices_.insert(vertices_.end(), {bottomLeft, bottomRight, topRight, bottomLeft, topRight, topLeft});
     }
-    drawBatch(true);
+    drawBatch(Pass::Smoke);
 
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);

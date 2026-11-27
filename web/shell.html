@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RacingGame</title>
+  <title>MMORP Racer</title>
   <link rel="icon" href="data:,">
   <style>
     body {
       margin: 0;
       height: 100dvh;
-      background: #102a46;
-      color: #eaffff;
+      background: #fff;
+      color: #141416;
       font: 14px/1.5 system-ui, sans-serif;
     }
     #viewport { position: relative; overflow: hidden; width: 100%; height: 100%; }
@@ -22,34 +22,31 @@
       margin: 0;
       place-content: center;
       text-align: center;
-      background: linear-gradient(141deg, #102a46 22%, #255f78 56%, #102a46 84%);
-      background-size: 180% 180%;
-      animation: sweep 3s ease-in-out infinite alternate;
+      background: #fff;
     }
     #status:not([hidden]) { display: grid; }
     #status strong { font-size: clamp(2.5rem, 8vw, 6rem); font-style: italic; line-height: 1.07; }
-    #loadMessage { color: #99eae8; }
+    #loadMessage { color: #124fb8; }
     #audioCredits {
       position: absolute;
       bottom: 0.6rem;
-      left: 0.8rem;
+      left: 50%;
+      transform: translateX(-50%);
       padding: 0.16rem 0.55rem;
       border-radius: 0.65rem;
-      color: #eaffff;
-      background: #102a46;
+      color: #fff;
+      background: #141416;
       font-size: 12px;
     }
-    @keyframes sweep { to { background-position: 100% 80%; } }
-    @media (prefers-reduced-motion: reduce) { #status { animation: none; } }
   </style>
 </head>
 <body>
   <main id="viewport">
     <div id="status" role="status">
-      <strong>RACING GAME</strong>
+      <strong>MMORP RACER</strong>
       <span id="loadMessage">Loading…</span>
     </div>
-    <canvas id="canvas" tabindex="0" aria-label="RacingGame"></canvas>
+    <canvas id="canvas" tabindex="0" aria-label="MMORP Racer"></canvas>
     <a id="audioCredits" href="audio-credits.txt" target="_blank" rel="noopener" hidden>Audio credits</a>
   </main>
   <script>

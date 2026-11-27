@@ -8,7 +8,7 @@
 
 class TireEffects {
 public:
-    TireEffects();
+    explicit TireEffects(std::size_t markLimit = 3072, float smokeDensity = 1.0f);
     ~TireEffects();
 
     TireEffects(const TireEffects&) = delete;
@@ -16,7 +16,8 @@ public:
 
     void update(const CarAsset& asset, const CarState& car, float dt);
     void clear();
-    void renderMarks(const glm::mat4& viewProjection);
+    void renderContactShadow(const CarAsset& asset, const CarState& car, const glm::mat4& viewProjection);
+    void renderMarks(const glm::mat4& viewProjection, std::size_t fadeTail = 0);
     void renderSmoke(const glm::mat4& viewProjection, const glm::mat4& view, const glm::vec3& eye, bool night);
 
     std::size_t markCount() const { return marks_.size(); }
@@ -56,20 +57,23 @@ private:
         float opacity;
     };
 
+    enum class Pass { Marks, Smoke, Shadow };
     float random();
     void beginBatch(const glm::mat4& viewProjection, bool night);
-    void drawBatch(bool smoke);
+    void drawBatch(Pass pass);
 
     std::array<Emitter, 4> emitters_{};
     std::deque<Mark> marks_;
     std::vector<Smoke> smoke_;
     std::vector<const Smoke*> sortedSmoke_;
     std::vector<EffectVertex> vertices_;
+    const std::size_t markLimit_;
+    const float smokeDensity_;
     std::uint32_t randomState_ = 1234567u;
     GLuint program_ = 0;
     GLuint vertexArray_ = 0;
     GLuint buffer_ = 0;
     GLint viewProjection_ = -1;
-    GLint smokePass_ = -1;
+    GLint effectPass_ = -1;
     GLint night_ = -1;
 };
