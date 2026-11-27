@@ -24,7 +24,8 @@ FetchContent_MakeAvailable(glm cgltf nlohmann_json stb miniaudio)
 
 add_executable(RacingGame
     src/main.cpp src/car.cpp src/driving.cpp src/renderer.cpp src/hud.cpp src/tire_effects.cpp src/lighting.cpp
-    src/audio.cpp src/engine_sound.cpp src/controls.cpp src/menu.cpp src/ui_draw.cpp)
+    src/audio.cpp src/engine_sound.cpp src/controls.cpp src/menu.cpp src/ui_draw.cpp src/camp.cpp
+    src/grass_renderer.cpp src/scenery_quality.cpp)
 target_compile_features(RacingGame PRIVATE cxx_std_17)
 target_include_directories(RacingGame SYSTEM PRIVATE "${cgltf_SOURCE_DIR}" "${stb_SOURCE_DIR}" "${miniaudio_SOURCE_DIR}")
 target_link_libraries(RacingGame PRIVATE glm::glm nlohmann_json::nlohmann_json)
@@ -32,6 +33,10 @@ set_target_properties(RacingGame PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BI
 
 set(car_asset "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars.glb")
 file(GLOB gale_asset CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale.glb")
+file(GLOB camp_assets CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/camp-tree-lod[012].glb")
+if(EMSCRIPTEN)
+    list(FILTER camp_assets EXCLUDE REGEX "camp-tree-lod0[.]glb$")
+endif()
 set(ui_assets
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/Barlow-SemiBold.ttf"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/BarlowCondensed-ExtraBoldItalic.ttf"
@@ -45,7 +50,7 @@ set(audio_assets
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-6040.wav"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-7252.wav"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/tire-squeal.wav")
-set(game_assets "${car_asset}" ${gale_asset} ${ui_assets} ${audio_assets})
+set(game_assets "${car_asset}" ${gale_asset} ${camp_assets} ${ui_assets} ${audio_assets})
 if(EMSCRIPTEN)
     set(web_shell "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html")
     set_target_properties(RacingGame PROPERTIES OUTPUT_NAME index SUFFIX ".html")
@@ -67,6 +72,9 @@ endif()
 
 target_include_directories(RacingGame SYSTEM PRIVATE "${glfw_SOURCE_DIR}/deps")
 target_link_libraries(RacingGame PRIVATE glfw)
+if(WIN32)
+    target_link_libraries(RacingGame PRIVATE dxgi)
+endif()
 if(UNIX)
     find_package(Threads REQUIRED)
     target_link_libraries(RacingGame PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
@@ -81,6 +89,7 @@ add_dependencies(RacingGame racing_assets)
 
 enable_testing()
 add_test(NAME native_smoke COMMAND RacingGame --smoke-test)
+add_test(NAME camp_smoke COMMAND RacingGame --smoke-test --camp)
 if(gale_asset)
     add_test(NAME gale_smoke COMMAND RacingGame --smoke-test --gale)
 endif()

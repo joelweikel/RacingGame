@@ -26,6 +26,7 @@ constexpr UiBox padTab{72, 168, 205, 40};
 constexpr UiBox keysTab{285, 168, 211, 40};
 constexpr UiBox defaultsButton{72, 626, 169, 38};
 constexpr UiBox goButton{842, 560, 358, 70};
+constexpr std::array courses{Course::TestGrid, Course::DustlineOval, Course::DerelictCamp};
 constexpr UiBox startButton{72, 488, 340, 72};
 
 enum class Icon { Play, Players, Controls, Car, Map, Oval, Restart, Exit };
@@ -352,6 +353,19 @@ void drawCourse(UiDraw& ui, Course course, float time)
                      direction * (glm::vec2(straight * 0.5f, 0) + 70.0f * glm::vec2(std::cos(angle), std::sin(angle)));
         }
         spark(ui, marker, 5, white, true);
+    } else if (course == Course::DerelictCamp) {
+        constexpr std::array<glm::vec2, 8> route{{{696, 493}, {766, 416}, {889, 430}, {991, 375},
+                                                {952, 313}, {819, 327}, {771, 280}, {871, 218}}};
+        for (std::size_t i = 1; i < route.size(); ++i) {
+            ui.line(route[i - 1], route[i], 13, opacity(uiAccentBlue, 0.3f));
+            ui.line(route[i - 1], route[i], 3, uiAccentBlue);
+        }
+        ui.line({958, 393}, {1069, 447}, 2, opacity(pale, 0.7f));
+        ui.rect({1066, 443, 12, 9}, pale);
+        ui.text("Camp", {1087, 436}, 19, pale);
+        const float path = std::fmod(time * 1.8f, static_cast<float>(route.size() - 1));
+        const auto i = static_cast<std::size_t>(path);
+        spark(ui, glm::mix(route[i], route[i + 1], path - static_cast<float>(i)), 5, white, true);
     } else {
         constexpr glm::vec2 center{898, 365};
         ui.circle(center, 40, opacity(uiAccentBlue, 0.11f));
@@ -369,7 +383,14 @@ void drawCourse(UiDraw& ui, Course course, float time)
 
 } // namespace
 
-std::string_view courseName(Course course) { return course == Course::TestGrid ? "Test Grid" : "Dustline Oval"; }
+std::string_view courseName(Course course)
+{
+    switch (course) {
+    case Course::DerelictCamp: return "Derelict Camp";
+    case Course::DustlineOval: return "Dustline Oval";
+    default: return "Test Grid";
+    }
+}
 
 Menu::Menu(CarModel initialModel, bool hasGale) : selectedCar_(initialModel), hasGale_(hasGale) {}
 
@@ -378,7 +399,7 @@ int Menu::count() const
     switch (screen_) {
     case Screen::Main: return 3;
     case Screen::Cars: return hasGale_ ? 2 : 1;
-    case Screen::Maps: return 2;
+    case Screen::Maps: return static_cast<int>(courses.size());
     case Screen::Settings: return actionCount;
     case Screen::Pause: return 4;
     default: return 0;
@@ -392,7 +413,7 @@ UiBox Menu::option(int index) const
     switch (screen_) {
     case Screen::Main: return {72, 352.0f + index * 89.0f, 456, 73};
     case Screen::Cars: return {72, 223.0f + index * 97.0f, 456, 73};
-    case Screen::Maps: return {72, 218.0f + index * 97.0f, 456, 73};
+    case Screen::Maps: return {72, 201.0f + index * 82.0f, 456, 73};
     case Screen::Settings: return {82, 226.0f + (index - firstBinding()) * 46.0f, 414, 39};
     case Screen::Pause: return {424, 232.0f + index * 74.0f, 432, 60};
     default: return {};
@@ -405,7 +426,7 @@ void Menu::open(Screen next)
     entered_ = time_;
     capture_ = -1;
     focus_ = next == Screen::Cars && hasGale_ ? (selectedCar_ == CarModel::Gale ? 0 : 1) :
-             next == Screen::Maps && course_ == Course::DustlineOval ? 1 : 0;
+             next == Screen::Maps ? static_cast<int>(std::find(courses.begin(), courses.end(), course_) - courses.begin()) : 0;
 }
 
 void Menu::transition(Screen next, glm::vec2 origin)
@@ -495,7 +516,7 @@ void Menu::update(Controls& controls, glm::vec2 cursor, float dt)
     }
     if (screen_ == Screen::Cars) selectedCar_ = hasGale_ && focus_ == 0 ? CarModel::Gale : CarModel::SlimRider;
     if (screen_ == Screen::Maps) {
-        course_ = focus_ == 0 ? Course::TestGrid : Course::DustlineOval;
+        course_ = courses[focus_];
         if (input.click && goButton.contains(cursor)) activated = true;
     }
     if (!activated) return;
@@ -611,8 +632,10 @@ void Menu::draw(UiDraw& ui, const Controls& controls) const
         ui.text("Choose a map", {69, 116}, 75, ink, italic);
         button(ui, option(0), courseName(Course::TestGrid), focus_ == 0, time_, Icon::Map, "Open practice surface");
         button(ui, option(1), courseName(Course::DustlineOval), focus_ == 1, time_, Icon::Oval, "Wide desert circuit");
+        button(ui, option(2), courseName(Course::DerelictCamp), focus_ == 2, time_, Icon::Map, "Endless mountain road");
         drawCourse(ui, course_, time_);
-        button(ui, goButton, "Start race", true, time_, Icon::Play, pad ? "Press A" : "Press Enter", press, true);
+        button(ui, goButton, course_ == Course::DerelictCamp ? "Start drive" : "Start race",
+               true, time_, Icon::Play, pad ? "Press A" : "Press Enter", press, true);
         panel(ui, {72, 455, 456, 81});
         icon(ui, Icon::Car, {104, 496}, uiAccentBlue);
         ui.text(spec.name, {133, 477}, 39, white, italic);

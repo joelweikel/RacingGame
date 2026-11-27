@@ -1,4 +1,5 @@
 #include "tire_effects.hpp"
+#include "camp.hpp"
 #include "shader.hpp"
 
 #include <algorithm>
@@ -105,10 +106,21 @@ void TireEffects::clear()
     smoke_.clear();
 }
 
-void TireEffects::update(const CarAsset& asset, const CarState& car, float dt)
+void TireEffects::shiftOrigin(const glm::vec3& shift)
+{
+    for (auto& emitter : emitters_) emitter.lastMark -= shift;
+    for (auto& mark : marks_) {
+        mark.start -= shift;
+        mark.end -= shift;
+    }
+    for (auto& puff : smoke_) puff.position -= shift;
+}
+
+void TireEffects::update(const CarAsset& asset, const CarState& car, float dt, const CampWorld* camp)
 {
     const glm::vec3 front = forward(car.heading);
     const glm::vec3 side = glm::cross(front, up);
+    const glm::mat3 ground = camp ? campGroundFrame(car) : glm::mat3(front, up, side);
     const float markWidth = std::max(0.065f, asset.wheelHalfWidth * 0.95f);
 
     for (Smoke& puff : smoke_) {
@@ -129,20 +141,20 @@ void TireEffects::update(const CarAsset& asset, const CarState& car, float dt)
             continue;
         }
 
-        const glm::vec3 offset = front * asset.hubs[i].x + side * asset.hubs[i].z;
+        const glm::vec3 offset = ground * glm::vec3(asset.hubs[i].x, car.wheels[i].groundTravel, asset.hubs[i].z);
         glm::vec3 contact = car.position + offset;
-        contact.y = asset.groundHeight;
+        contact.y = camp ? camp->surface(contact).height + 0.022f : asset.groundHeight;
         const float opacity = 0.24f + 0.58f * slip;
         if (!emitter.marking) {
             emitter.lastMark = contact;
-            emitter.markSide = side * markWidth;
+            emitter.markSide = ground[2] * markWidth;
             emitter.markOpacity = opacity;
             emitter.marking = true;
         } else {
             const glm::vec3 movement = contact - emitter.lastMark;
             const float distance = glm::length(movement);
             if (distance >= 0.075f) {
-                glm::vec3 markSide = glm::cross(movement / distance, up) * markWidth;
+                glm::vec3 markSide = glm::cross(movement / distance, ground[1]) * markWidth;
                 if (glm::dot(emitter.markSide, markSide) < 0.0f) {
                     markSide = -markSide;
                 }
@@ -216,14 +228,13 @@ void TireEffects::renderContactShadow(const CarAsset& asset, const CarState& car
     glDisable(GL_BLEND);
 }
 
-void TireEffects::renderMarks(const glm::mat4& viewProjection, std::size_t fadeTail)
+void TireEffects::renderMarks(const glm::mat4& viewProjection, std::size_t fadeTail, bool groundDepth)
 {
     if (marks_.empty()) {
         return;
     }
-    // Paint the ground layer before drawing any 3D objects. This keeps marks off the depth test.
     beginBatch(viewProjection, false);
-    glDisable(GL_DEPTH_TEST);
+    if (!groundDepth) glDisable(GL_DEPTH_TEST);
     vertices_.clear();
     const float fadeStep = fadeTail == 0 ? 0.0f : 1.0f / static_cast<float>(fadeTail);
     float fade = fadeTail == 0 ? 1.0f : 0.0f;

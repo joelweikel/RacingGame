@@ -14,10 +14,11 @@ public:
     TireEffects(const TireEffects&) = delete;
     TireEffects& operator=(const TireEffects&) = delete;
 
-    void update(const CarAsset& asset, const CarState& car, float dt);
+    void update(const CarAsset& asset, const CarState& car, float dt, const CampWorld* camp = nullptr);
     void clear();
+    void shiftOrigin(const glm::vec3& shift);
     void renderContactShadow(const CarAsset& asset, const CarState& car, const glm::mat4& viewProjection);
-    void renderMarks(const glm::mat4& viewProjection, std::size_t fadeTail = 0);
+    void renderMarks(const glm::mat4& viewProjection, std::size_t fadeTail = 0, bool groundDepth = false);
     void renderSmoke(const glm::mat4& viewProjection, const glm::mat4& view, const glm::vec3& eye, bool night);
 
     std::size_t markCount() const { return marks_.size(); }

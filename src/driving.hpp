@@ -2,6 +2,8 @@
 
 #include "car.hpp"
 
+class CampWorld;
+
 inline constexpr int highestGear = 6;
 inline constexpr float idleRpm = 850.0f;
 inline constexpr float metersPerSecondToMph = 2.2369363f;
@@ -18,6 +20,7 @@ struct WheelState {
     float angle = 0.0f;
     float slip = 0.0f;
     float load = 0.0f;
+    float groundTravel = 0.0f;
 };
 
 struct SuspensionState {
@@ -35,6 +38,7 @@ struct CarState {
     float heading = 0.0f;
     float yawRate = 0.0f;
     float steering = 0.0f;
+    glm::vec2 groundSlope{0.0f}; // Rise along the car's forward and left directions.
     SuspensionState suspension;
     std::array<WheelState, 4> wheels{};
     int gear = 1;
@@ -44,6 +48,9 @@ struct CarState {
     float shiftTime = 0.0f;
 };
 
-void drive(CarState& car, const CarAsset& asset, const DriveInput& input, float dt);
+void drive(CarState& car, const CarAsset& asset, const DriveInput& input, float dt, const CampWorld* camp = nullptr);
+void placeOnCampSurface(CarState& car, const CarAsset& asset, const CampWorld& camp);
+glm::mat3 campGroundFrame(const CarState& car);
 void shiftGear(CarState& car, int direction);
 glm::vec3 forward(float heading);
+float frontWheelSteering(const CarAsset& asset, std::size_t wheel, float steering);

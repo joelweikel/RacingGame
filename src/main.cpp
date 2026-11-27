@@ -1,4 +1,5 @@
 #include "audio.hpp"
+#include "camp.hpp"
 #include "hud.hpp"
 #include "menu.hpp"
 
@@ -95,9 +96,88 @@ struct CameraInput {
     }
 };
 
+void smokeTestHandling(const CarAsset& asset)
+{
+    CarState launch;
+    for (int step = 0; step < 120; ++step) {
+        drive(launch, asset, {1.0f}, fixedStep);
+        const float slipReference = std::max(2.5f, launch.velocity.x);
+        for (const auto& wheel : launch.wheels) {
+            if (wheel.angularSpeed * asset.wheelRadius - launch.velocity.x > 0.16f * slipReference) {
+                throw std::runtime_error("Traction control allowed excessive wheelspin during launch");
+            }
+        }
+    }
+
+    const auto rolling = [&](float speed) {
+        CarState car;
+        car.velocity.x = speed;
+        for (auto& wheel : car.wheels) {
+            wheel.angularSpeed = speed / asset.wheelRadius;
+        }
+        return car;
+    };
+    CarState corner = rolling(20.0f);
+    for (int step = 0; step < 120; ++step) {
+        drive(corner, asset, {0.0f, 1.0f}, fixedStep);
+    }
+    const glm::vec3 cornerDirection = forward(corner.heading);
+    const float cornerSpeed = glm::length(corner.velocity);
+    if (cornerSpeed < 17.0f || glm::dot(corner.velocity, cornerDirection) < 0.99f * cornerSpeed ||
+        corner.position.z > -2.0f) {
+        throw std::runtime_error("Coasting turn lost grip or failed to rotate");
+    }
+
+    CarState powerTurn = rolling(10.0f);
+    for (int step = 0; step < 60; ++step) {
+        drive(powerTurn, asset, {1.0f, 1.0f}, fixedStep);
+    }
+    const float frontSlip = std::max(powerTurn.wheels[0].slip, powerTurn.wheels[1].slip);
+    const float rearSlip = std::max(powerTurn.wheels[2].slip, powerTurn.wheels[3].slip);
+    if (frontSlip > 0.45f || powerTurn.heading < 0.2f ||
+        (asset.model == CarModel::SlimRider ? rearSlip < 0.65f : rearSlip > 0.45f)) {
+        throw std::runtime_error("Power turn lost front grip or failed to preserve the car's handling balance");
+    }
+}
+
+void smokeTestDonuts(const CarAsset& asset)
+{
+    for (const float steering : {-1.0f, 1.0f}) {
+        CarState car;
+        for (int step = 0; step < 720; ++step) {
+            drive(car, asset, {1.0f, steering}, fixedStep);
+        }
+
+        const glm::vec3 start = car.position;
+        float rotation = 0.0f;
+        for (int step = 0; step < 600; ++step) {
+            drive(car, asset, {1.0f, steering}, fixedStep);
+            const glm::vec3 side = glm::cross(forward(car.heading), glm::vec3{0.0f, 1.0f, 0.0f});
+            const float speed = glm::length(car.velocity);
+            if (speed < 3.0f || speed > 8.0f || glm::dot(car.velocity, side) * steering < 0.22f * speed ||
+                std::max(car.wheels[2].slip, car.wheels[3].slip) < 0.65f || car.brakeLights ||
+                glm::length(car.position - start) > 10.0f) {
+                throw std::runtime_error("SlimRider failed to sustain a tight donut");
+            }
+            rotation += car.yawRate * steering * fixedStep;
+        }
+        if (rotation < 6.28318531f) {
+            throw std::runtime_error("SlimRider did not complete a full donut rotation");
+        }
+
+        for (int step = 0; step < 180; ++step) {
+            drive(car, asset, {0.45f}, fixedStep);
+        }
+        if (std::abs(car.yawRate) > 0.1f || std::max(car.wheels[2].slip, car.wheels[3].slip) > 0.2f) {
+            throw std::runtime_error("SlimRider did not regain traction after exiting the donut");
+        }
+    }
+}
+
 void smokeTest(const CarAsset& asset, Renderer& renderer, TireEffects& effects, GLFWwindow* window,
                const std::filesystem::path& assets)
 {
+    smokeTestDonuts(asset);
     CarState car;
     effects.update(asset, car, fixedStep);
     if (effects.markCount() != 0 || effects.smokeCount() != 0) {
@@ -325,13 +405,23 @@ void smokeTest(const CarAsset& asset, Renderer& renderer, TireEffects& effects, 
 
 void smokeTestGale(const CarAsset& asset, Renderer& renderer, TireEffects& effects, GLFWwindow* window)
 {
-    CarState car;
-    drive(car, asset, {1.0f}, fixedStep);
-    const float frontSpin = car.wheels[0].angularSpeed;
-    const float rearSpin = car.wheels[2].angularSpeed;
+    // Equal axle loads isolate the torque split from the weight-dependent tire response.
+    CarAsset centered;
+    centered.model = asset.model;
+    centered.wheelRadius = asset.wheelRadius;
+    centered.hubs = asset.hubs;
+    const float halfWheelbase = (asset.hubs[0].x - asset.hubs[2].x) * 0.5f;
+    for (auto& hub : centered.hubs) {
+        hub.x = std::copysign(halfWheelbase, hub.x);
+    }
+    CarState torqueCheck;
+    drive(torqueCheck, centered, {1.0f}, fixedStep);
+    const float frontSpin = torqueCheck.wheels[0].angularSpeed;
+    const float rearSpin = torqueCheck.wheels[2].angularSpeed;
     if (frontSpin <= 0.0f || std::abs(frontSpin / (frontSpin + rearSpin) - 0.30f) > 0.01f) {
         throw std::runtime_error("Gale AWD torque split check failed");
     }
+    CarState car;
     for (int step = 0; step < 1440; ++step) {
         drive(car, asset, {1.0f}, fixedStep);
     }
@@ -349,6 +439,167 @@ void smokeTestGale(const CarAsset& asset, Renderer& renderer, TireEffects& effec
               << asset.wheel.size() << " wheel primitives. AWD and automatic upshift verified.\n";
 }
 
+void smokeTestCamp(const CarAsset& asset, Renderer& renderer, TireEffects& effects, GLFWwindow* window)
+{
+    CampWorld camp;
+    {
+        CampWorld grass;
+        const CampTile grassTile{0, 1};
+        const auto plants = grass.buildGrass(grassTile, 23, GrassBand::Near);
+        const auto repeat = grass.buildGrass(grassTile, 23, GrassBand::Near);
+        const auto middle = grass.buildGrass(grassTile, 23, GrassBand::Middle);
+        const auto farPlants = grass.buildGrass(grassTile, 23, GrassBand::Far);
+        if (farPlants.empty() || farPlants.size() >= middle.size() || middle.size() >= plants.size() ||
+            repeat.size() != plants.size() || repeat.front().root != plants.front().root) {
+            throw std::runtime_error("Camp grass did not regenerate from the world seed");
+        }
+        const auto distant = grass.buildGrass(grassTile, 23, GrassBand::Far, true);
+        const auto horizon = grass.buildGrass(grassTile, 23, GrassBand::Horizon, true);
+        if (distant.size() + horizon.size() != farPlants.size()) {
+            throw std::runtime_error("The horizon grass band duplicated or dropped plants");
+        }
+        const glm::vec3 plant = plants.front().root + glm::vec3(0.0f, 0.0f, campGrassTileSize);
+        const glm::dvec2 point{plant.x, plant.z};
+        if (grass.surface(plant).grip >= 0.97f) throw std::runtime_error("Camp grass grew on the road");
+        CarState trampler;
+        const auto& tire = asset.hubs[0];
+        trampler.position = plant - glm::vec3(tire.x + 0.45f, 0.0f, tire.z);
+        grass.trampleGrass(asset, trampler, fixedStep);
+        trampler.position.x += 0.9f;
+        grass.trampleGrass(asset, trampler, fixedStep);
+        const auto pressed = grass.grassTrack(point);
+        if (pressed.flattened < 0.85f || pressed.direction.x < 0.95f) {
+            throw std::runtime_error("A swept tire failed to flatten grass in its direction of travel");
+        }
+        trampler.position.x += 4.0f;
+        grass.trampleGrass(asset, trampler, fixedStep);
+        glm::vec3 far{1025.0f, 0.0f, 0.0f};
+        trampler.position -= grass.rebase(far);
+        grass.trampleGrass(asset, trampler, 5.0f);
+        const float recovering = grass.grassTrack(point).flattened;
+        grass.trampleGrass(asset, trampler, 5.0f);
+        if (recovering < 0.1f || recovering >= pressed.flattened || grass.grassTrack(point).flattened != 0.0f) {
+            throw std::runtime_error("Camp grass failed to recover across a world origin shift");
+        }
+    }
+    const auto first = camp.buildChunk({0, 0});
+    const auto next = camp.buildChunk({1, 0});
+    const auto position = [&](const CampChunk& chunk, const Vertex& vertex) {
+        return camp.localOrigin(chunk.origin) + vertex.position;
+    };
+    if (first.surfaces[1].indices.empty() || first.surfaces[2].indices.empty()) {
+        throw std::runtime_error("Camp road or gravel pullout was not generated");
+    }
+    const auto& firstTerrain = first.surfaces[0].vertices;
+    const auto& nextTerrain = next.surfaces[0].vertices;
+    const std::size_t row = firstTerrain.size() / 33;
+    for (std::size_t i = 0; i < row; ++i) {
+        if (glm::length(position(first, firstTerrain[32 * row + i]) - position(next, nextTerrain[i])) > 0.001f) {
+            throw std::runtime_error("Camp terrain seam did not match");
+        }
+    }
+    const auto detailed = camp.buildChunk({0, 1});
+    const auto distant = camp.buildChunk({1, 1}, 4);
+    const auto& distantMesh = distant.surfaces[0];
+    if (distantMesh.indices.size() >= detailed.surfaces[0].indices.size() / 4) {
+        throw std::runtime_error("Distant terrain did not reduce mesh detail");
+    }
+    for (const auto& vertex : detailed.surfaces[0].vertices) {
+        if (vertex.position.x != static_cast<float>(campTerrainTileSize)) continue;
+        const auto seam = position(detailed, vertex);
+        if (std::none_of(distantMesh.vertices.begin(), distantMesh.vertices.end(), [&](const Vertex& other) {
+            return glm::length(seam - position(distant, other)) < 0.001f;
+        })) throw std::runtime_error("Distant terrain did not match the full-detail seam");
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+        const auto& mesh = first.surfaces[i];
+        for (std::size_t j = 0; j + 2 < mesh.indices.size(); j += 21) {
+            const glm::vec3 point = (position(first, mesh.vertices[mesh.indices[j]]) +
+                position(first, mesh.vertices[mesh.indices[j + 1]]) + position(first, mesh.vertices[mesh.indices[j + 2]])) / 3.0f;
+            if (std::abs(camp.surface(point).height - point.y) > 0.001f) {
+                throw std::runtime_error("Camp wheel contact did not match the rendered terrain");
+            }
+        }
+    }
+    const auto shelter = std::find_if(first.props.begin(), first.props.end(), [](const auto& prop) {
+        return prop.kind == CampProp::Shelter;
+    });
+    if (shelter == first.props.end()) throw std::runtime_error("Camp shelter was not generated");
+    glm::vec3 obstacle = camp.localOrigin(first.origin) + shelter->center;
+    glm::vec3 impact = obstacle + glm::vec3(shelter->size.x * 0.5f + 0.2f, 0.0f, 0.0f);
+    glm::vec3 velocity{-10.0f, 0.0f, 0.0f};
+    camp.collide(impact, velocity);
+    if (impact.x < obstacle.x + shelter->size.x * 0.5f + 0.8f || velocity.x < 0.0f) {
+        throw std::runtime_error("Camp shelter collision did not stop the car");
+    }
+
+    CarState car;
+    car.position = camp.spawn();
+    car.heading = camp.spawnHeading();
+    placeOnCampSurface(car, asset, camp);
+    for (int step = 0; step < 240; ++step) drive(car, asset, {1.0f}, fixedStep, &camp);
+    if (car.position.x < 4.0f || !std::isfinite(car.groundSlope.x) ||
+        std::abs(car.position.y - camp.surface(car.position).height) > 0.6f) {
+        throw std::runtime_error("Camp driving did not follow the terrain");
+    }
+
+    CarState banked;
+    bool foundBank = false, foundUneven = false;
+    for (int x = 15; x < 105; x += 7) {
+        for (int z = -42; z < 43; z += 5) {
+            CarState slope;
+            slope.position = {static_cast<float>(x), 0.0f, static_cast<float>(z)};
+            slope.heading = 0.7f;
+            placeOnCampSurface(slope, asset, camp);
+            if (std::abs(slope.groundSlope.x) < 0.12f || std::abs(slope.groundSlope.y) < 0.22f) continue;
+            const auto frame = campGroundFrame(slope);
+            for (std::size_t i = 0; i < slope.wheels.size(); ++i) {
+                const auto& hub = asset.hubs[i];
+                const float travel = slope.wheels[i].groundTravel;
+                if (std::abs(travel) >= asset.wheelRadius - 0.001f) continue;
+                const auto contact = slope.position + frame * glm::vec3(hub.x, travel, hub.z);
+                if (std::abs(contact.y - camp.surface(contact).height) > 0.016f) {
+                    throw std::runtime_error("Camp wheel lost contact on a banked slope");
+                }
+                foundUneven |= std::abs(travel) > 0.035f;
+            }
+            if (!foundBank) banked = slope;
+            foundBank = true;
+        }
+    }
+    if (!foundBank || !foundUneven) throw std::runtime_error("Camp slope check did not exercise suspension travel");
+
+    SceneView scene;
+    scene.course = Course::DerelictCamp;
+    scene.camp = &camp;
+    int width = 0, height = 0;
+    glfwGetFramebufferSize(window, &width, &height);
+    for (int frame = 0; frame < 8; ++frame) {
+        renderer.render(asset, car, ChaseCamera{}, effects, width / 2, height / 2, true, scene);
+    }
+    std::array<unsigned char, 4> night{}, day{};
+    glReadPixels(width / 8, height / 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, night.data());
+    renderer.render(asset, car, ChaseCamera{}, effects, width, height, false, scene);
+    glReadPixels(width / 4, height / 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, day.data());
+    if (night == day || night[2] < 30 || glGetError() != GL_NO_ERROR) {
+        throw std::runtime_error("Camp lighting or fog framebuffer check failed");
+    }
+
+    banked.steering = 0.35f;
+    renderer.render(asset, banked, ChaseCamera{}, effects, width / 2, height / 2, false, scene);
+    car.position = {10993.25f, 0.0f, -1322.25f};
+    const auto tile = camp.tileAt(car.position);
+    const float before = camp.surface(car.position).height;
+    camp.rebase(car.position);
+    if (tile != camp.tileAt(car.position) || std::abs(camp.surface(car.position).height - before) > 0.001f) {
+        throw std::runtime_error("Camp streaming origin changed the terrain");
+    }
+    placeOnCampSurface(car, asset, camp);
+    renderer.render(asset, car, ChaseCamera{}, effects, width / 2, height / 2, true, scene);
+    if (glGetError() != GL_NO_ERROR) throw std::runtime_error("Camp streaming render failed after a long-distance drive");
+    std::cout << "Camp terrain, wheel contact, collisions, fog, and streaming verified.\n";
+}
+
 using Window = std::unique_ptr<GLFWwindow, decltype(&glfwDestroyWindow)>;
 
 class Game {
@@ -360,7 +611,7 @@ public:
     {
         const auto i = static_cast<std::size_t>(initialAsset.model);
         cars[i] = std::move(initialAsset);
-        renderers[i] = std::make_unique<Renderer>(cars[i]);
+        renderers[i] = std::make_unique<Renderer>(cars[i], assets);
     }
 
     bool frame()
@@ -387,6 +638,7 @@ public:
         const auto cursor = controls.menu().cursor * glm::vec2(
             static_cast<float>(width) / displayWidth, static_cast<float>(height) / displayHeight);
         menu.update(controls, ui.fromScreen(cursor), dt);
+        const bool startingFromMap = lastScreen == Screen::Maps;
         if (menu.screen() != lastScreen) {
             lastScreen = menu.screen();
             updateTitle();
@@ -394,11 +646,15 @@ public:
         const bool driving = menu.screen() == Screen::Drive;
         controls.setMouseLook(driving);
         if (menu.takeRaceStart()) {
+            if (startingFromMap && menu.course() == Course::DerelictCamp) {
+                camp = CampWorld(static_cast<std::uint32_t>(glfwGetTimerValue()));
+            }
             reset();
-            night = false;
+            night = menu.course() == Course::DerelictCamp;
         }
 
-        const SceneView view = menu.scene(ui, width, height);
+        SceneView view = menu.scene(ui, width, height);
+        view.camp = !view.menu && view.course == Course::DerelictCamp ? &camp : nullptr;
         const auto model = menu.displayedCar();
         const std::size_t i = static_cast<std::size_t>(model);
         const CarAsset& asset = sceneAsset(model, i);
@@ -414,9 +670,13 @@ public:
             cameraInput.update(window.get(), camera, dt, look);
             accumulator += dt;
             while (accumulator >= fixedStep) {
-                drive(car, asset, input, fixedStep);
-                effects.update(asset, car, fixedStep);
+                drive(car, asset, input, fixedStep, view.camp);
+                effects.update(asset, car, fixedStep, view.camp);
+                if (view.camp) camp.trampleGrass(asset, car, fixedStep);
                 accumulator -= fixedStep;
+            }
+            if (view.camp && (std::abs(car.position.x) >= 1024.0f || std::abs(car.position.z) >= 1024.0f)) {
+                effects.shiftOrigin(camp.rebase(car.position));
             }
             camera.updateSpeed(glm::length(car.velocity), dt);
         }
@@ -460,6 +720,13 @@ private:
     void reset()
     {
         car = {};
+        if (menu.course() == Course::DerelictCamp) {
+            camp = CampWorld(camp.seed());
+            const auto model = menu.playerCar();
+            car.position = camp.spawn();
+            car.heading = camp.spawnHeading();
+            placeOnCampSurface(car, sceneAsset(model, static_cast<std::size_t>(model)), camp);
+        }
         camera = {};
         effects.clear();
         accumulator = 0.0;
@@ -469,7 +736,7 @@ private:
     {
         if (!renderers[i]) {
             cars[i] = loadCar(assets / carSpec(model).assetFile, model);
-            renderers[i] = std::make_unique<Renderer>(cars[i]);
+            renderers[i] = std::make_unique<Renderer>(cars[i], assets);
         }
         return cars[i];
     }
@@ -484,6 +751,7 @@ private:
     TireEffects effects;
     TitleDrift titleDrift;
     GameAudio audio;
+    CampWorld camp;
     CarState car;
     ChaseCamera camera;
     CameraInput cameraInput;
@@ -493,7 +761,7 @@ private:
     double accumulator = 0.0;
 };
 
-void run(const std::filesystem::path& assets, CarModel model, bool smoke)
+void run(const std::filesystem::path& assets, CarModel model, bool smoke, bool campTest)
 {
     CarAsset asset = loadCar(assets / carSpec(model).assetFile, model);
 #ifdef __EMSCRIPTEN__
@@ -521,8 +789,13 @@ void run(const std::filesystem::path& assets, CarModel model, bool smoke)
 #endif
 
     if (smoke) {
-        Renderer renderer(asset);
+        Renderer renderer(asset, assets);
         TireEffects effects;
+        if (campTest) {
+            smokeTestCamp(asset, renderer, effects, window.get());
+            return;
+        }
+        smokeTestHandling(asset);
         if (model == CarModel::Gale) {
             smokeTestGale(asset, renderer, effects, window.get());
         } else {
@@ -571,21 +844,24 @@ int main(int argc, char** argv)
 
     int result = 0;
     bool smoke = false;
+    bool campTest = false;
     try {
         CarModel model = CarModel::SlimRider;
         for (int i = 1; i < argc; ++i) {
             const std::string_view argument(argv[i]);
             if (argument == "--smoke-test") {
                 smoke = true;
+            } else if (argument == "--camp") {
+                campTest = true;
             } else if (argument == "--gale") {
                 model = CarModel::Gale;
             }
         }
 #ifdef __EMSCRIPTEN__
-        run("/assets", model, smoke);
+        run("/assets", model, smoke, campTest);
 #else
         const std::filesystem::path executable = std::filesystem::absolute(argv[0]);
-        run(executable.parent_path() / "assets", model, smoke);
+        run(executable.parent_path() / "assets", model, smoke, campTest);
 #endif
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

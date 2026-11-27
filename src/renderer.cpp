@@ -5,12 +5,18 @@
 #endif
 
 #include "renderer.hpp"
+#include "camp.hpp"
+#include "grass_renderer.hpp"
 #include "shader.hpp"
+#include "shadow_sampling.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <iostream>
+#include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -24,21 +30,30 @@ constexpr glm::vec3 up{0.0f, 1.0f, 0.0f};
 constexpr glm::vec3 axle{0.0f, 0.0f, 1.0f};
 constexpr float pi = 3.14159265f;
 const glm::vec3 sunDirection = glm::normalize(glm::vec3(0.981f, 0.125f, 0.15f));
+const glm::vec3 moonDirection = glm::normalize(glm::vec3(0.91f, 0.30f, 0.22f));
+const glm::vec3 campSunDirection = glm::normalize(glm::vec3(0.83f, 0.40f, 0.27f));
 
 constexpr const char* vertexShader = R"glsl(
 layout (location = 0) in vec3 position;
 layout (location = 1) in vec3 normal;
+layout (location = 2) in vec3 instanceCenter;
+layout (location = 3) in vec3 instanceSize;
+layout (location = 4) in vec2 uv;
 
 uniform mat4 uModel;
 uniform mat4 uViewProjection;
+uniform bool uInstanced;
 
 out vec3 worldPosition;
 out vec3 worldNormal;
+out vec2 textureUV;
 
 void main() {
-    vec4 world = uModel * vec4(position, 1.0);
+    vec3 local = uInstanced ? position * instanceSize + instanceCenter : position;
+    vec4 world = uModel * vec4(local, 1.0);
     worldPosition = world.xyz;
-    worldNormal = transpose(inverse(mat3(uModel))) * normal;
+    worldNormal = uInstanced ? normal / instanceSize : transpose(inverse(mat3(uModel))) * normal;
+    textureUV = uv;
     gl_Position = uViewProjection * world;
 }
 )glsl";
@@ -65,6 +80,7 @@ vec3 skyRadiance(vec3 direction) {
 constexpr const char* materialFragment = R"glsl(
 in vec3 worldPosition;
 in vec3 worldNormal;
+in vec2 textureUV;
 
 uniform vec3 uColor;
 uniform vec3 uEye;
@@ -74,39 +90,29 @@ uniform float uLensTint;
 uniform bool uGroundPass;
 uniform bool uMenuLight;
 uniform int uCourse;
-uniform sampler2D uShadowMap;
-uniform mat4 uLightMatrix;
+uniform sampler2D uBaseColor;
+uniform bool uTextured;
+uniform vec2 uAlphaMask;
+uniform bool uCampGround;
 
 out vec4 pixelColor;
 
 float sunlight(vec3 normal) {
-    if (uNight) {
+    if (uNight && uCourse != 2) {
         return 0.0;
     }
     if (uMenuLight) return 1.0;
-    vec3 uv = (uLightMatrix * vec4(worldPosition, 1.0)).xyz * 0.5 + 0.5;
-    if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0)))) {
-        return 1.0;
-    }
     float angle = max(0.0, dot(normal, uSunDirection));
     float bias = uGroundPass ? mix(0.00026, 0.00007, angle) : mix(0.0015, 0.00042, angle);
-    vec2 stepSize = 1.3 / vec2(textureSize(uShadowMap, 0));
-    float lit = 0.0;
-    for (int row = -1; row <= 1; ++row) {
-        for (int column = -1; column <= 1; ++column) {
-            float depth = texture(uShadowMap, uv.xy + vec2(column, row) * stepSize).r;
-            lit += step(uv.z - bias, depth);
-        }
-    }
-    float edge = smoothstep(0.46, 0.49, max(abs(uv.x - 0.5), abs(uv.y - 0.5)));
-    return mix(lit / 9.0, 1.0, edge);
+    if (uHasDistantShadow) bias *= 0.53;
+    return sceneShadow(worldPosition, bias, uHasDistantShadow ? 3 : 2);
 }
 
 void main() {
     vec3 toEye = uEye - worldPosition;
     float distanceToEye = length(toEye);
     vec3 view = toEye / max(distanceToEye, 0.0001);
-    float fog = 1.0 - exp(-distanceToEye * 0.014);
+    float fog = uCourse == 2 ? 0.0 : 1.0 - exp(-distanceToEye * 0.014);
     if (uGroundPass) {
         vec2 grid = worldPosition.xz / 2.5;
         vec2 width = max(fwidth(grid), vec2(0.0001));
@@ -161,10 +167,20 @@ void main() {
         return;
     }
 
-    float ambient = uNight ? 0.06 : 0.22 + 0.31 * (normal.y * 0.5 + 0.5);
-    float daylight = ambient + 0.62 * direct * max(dot(normal, uSunDirection), 0.0);
-    vec3 diffuse = uColor * daylight * (1.0 - metallic * 0.86);
-    vec3 specular = mix(mix(vec3(0.045), uColor, metallic), vec3(1.0), fresnel * 0.72);
+    vec4 base = uTextured ? texture(uBaseColor, textureUV) : vec4(1.0);
+    if (uAlphaMask.x >= 0.0 && base.a * uAlphaMask.y < uAlphaMask.x) discard;
+    vec3 albedo = uColor * base.rgb;
+    if (uCampGround) {
+        vec2 p = worldPosition.xz * 0.006135923;
+        float grain = sin(p.x * 181.0 + p.y * 139.0) * cos(p.x * 157.0 - p.y * 127.0);
+        float patches = sin(p.x * 17.0 - p.y * 21.0) * sin(p.x * 11.0 + p.y * 15.0);
+        albedo *= 1.0 + 0.055 * grain + 0.095 * patches;
+    }
+    float ambient = uNight ? (uCourse == 2 ? 0.23 : 0.06) : 0.22 + 0.31 * (normal.y * 0.5 + 0.5);
+    float daylight = ambient + (uNight ? 0.38 : 0.62) * direct * max(dot(normal, uSunDirection), 0.0);
+    vec3 diffuse = albedo * daylight * (1.0 - metallic * 0.86);
+    if (uNight && uCourse == 2) diffuse *= vec3(0.71, 0.84, 1.04);
+    vec3 specular = mix(mix(vec3(0.045), albedo, metallic), vec3(1.0), fresnel * 0.72);
     vec3 coat = skyRadiance(reflection) * clearcoat * (0.085 + 0.18 * fresnel);
     float coatSun = pow(max(dot(reflection, uSunDirection), 0.0), 125.0);
     coat += clearcoat * direct * coatSun * vec3(1.85, 1.55, 1.18);
@@ -177,6 +193,7 @@ constexpr const char* skyFragment = R"glsl(
 in vec2 clipPosition;
 uniform mat4 uClipToWorld;
 uniform bool uMenu;
+uniform bool uCamp;
 uniform float uTime;
 uniform float uMenuColor;
 out vec4 pixelColor;
@@ -234,6 +251,9 @@ void main() {
         float sun = smoothstep(0.99962, 0.9998, dot(ray, uSunDirection));
         if (!uNight) {
             sky += vec3(4.8, 3.9, 2.5) * sun;
+        } else if (uCamp) {
+            float moon = smoothstep(0.99986, 0.99991, dot(ray, uSunDirection));
+            sky += vec3(1.5, 1.72, 2.1) * moon * (1.0 - cover * 0.63);
         }
     }
     pixelColor = vec4(sky, 1.0);
@@ -308,6 +328,45 @@ MeshPart makeGround(float height)
     return plane;
 }
 
+MeshPart makeCampProp(CampProp kind)
+{
+    constexpr std::array<glm::vec3, 5> colors{{
+        {0.12f, 0.43f, 0.19f}, {0.24f, 0.145f, 0.092f}, {0.34f, 0.27f, 0.20f},
+        {0.35f, 0.245f, 0.145f}, {0.39f, 0.47f, 0.39f},
+    }};
+    constexpr std::array<glm::vec3, 8> cube{{
+        {-0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, 0.5f}, {-0.5f, -0.5f, 0.5f},
+        {-0.5f, 0.5f, -0.5f}, {0.5f, 0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f},
+    }};
+    MeshPart mesh;
+    mesh.surface.color = colors[static_cast<std::size_t>(kind)];
+    const auto triangle = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c) {
+        const auto index = static_cast<std::uint32_t>(mesh.vertices.size());
+        const auto normal = glm::normalize(glm::cross(b - a, c - a));
+        mesh.vertices.insert(mesh.vertices.end(), {{a, normal}, {b, normal}, {c, normal}});
+        mesh.indices.insert(mesh.indices.end(), {index, index + 1, index + 2});
+    };
+    const auto face = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d) {
+        triangle(a, b, c);
+        triangle(a, c, d);
+    };
+    if (kind == CampProp::Canvas) {
+        constexpr glm::vec3 left{-0.5f, 0.5f, 0.0f}, right{0.5f, 0.5f, 0.0f};
+        triangle(cube[0], cube[3], left);
+        triangle(cube[2], cube[1], right);
+        face(cube[1], cube[0], left, right);
+        face(cube[3], cube[2], right, left);
+    } else {
+        face(cube[0], cube[1], cube[2], cube[3]);
+        face(cube[7], cube[6], cube[5], cube[4]);
+        face(cube[1], cube[0], cube[4], cube[5]);
+        face(cube[3], cube[2], cube[6], cube[7]);
+        face(cube[0], cube[3], cube[7], cube[4]);
+        face(cube[2], cube[1], cube[5], cube[6]);
+    }
+    return mesh;
+}
+
 } // namespace
 
 void ChaseCamera::update(const glm::vec2& mouseDelta, bool looking, float dt)
@@ -338,7 +397,7 @@ void ChaseCamera::updateSpeed(float metersPerSecond, float dt)
 
 Renderer::MeshBuffer::MeshBuffer(const MeshPart& part)
     : indexCount_(static_cast<GLsizei>(part.indices.size())), surface_(part.surface),
-      mirrorAcrossBody_(part.mirrorAcrossBody)
+      mirrorAcrossBody_(part.mirrorAcrossBody), alphaCutoff_(part.alphaCutoff), alphaFactor_(part.alphaFactor)
 {
     glGenVertexArrays(1, &vertexArray_);
     glGenBuffers(1, &vertexBuffer_);
@@ -354,14 +413,27 @@ Renderer::MeshBuffer::MeshBuffer(const MeshPart& part)
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<const void*>(offsetof(Vertex, normal)));
     glEnableVertexAttribArray(1);
+    glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<const void*>(offsetof(Vertex, uv)));
+    glEnableVertexAttribArray(4);
     glBindVertexArray(0);
+    if (part.baseColor) {
+        const auto& image = *part.baseColor;
+        glGenTextures(1, &texture_);
+        glBindTexture(GL_TEXTURE_2D, texture_);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, image.width, image.height, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, image.rgba.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
 }
 
 Renderer::MeshBuffer::MeshBuffer(MeshBuffer&& other) noexcept
     : vertexArray_(std::exchange(other.vertexArray_, 0)),
       vertexBuffer_(std::exchange(other.vertexBuffer_, 0)),
       indexBuffer_(std::exchange(other.indexBuffer_, 0)),
-      indexCount_(other.indexCount_), surface_(other.surface_), mirrorAcrossBody_(other.mirrorAcrossBody_)
+      texture_(std::exchange(other.texture_, 0)), indexCount_(other.indexCount_), surface_(other.surface_),
+      mirrorAcrossBody_(other.mirrorAcrossBody_), alphaCutoff_(other.alphaCutoff_), alphaFactor_(other.alphaFactor_)
 {
 }
 
@@ -370,6 +442,7 @@ Renderer::MeshBuffer::~MeshBuffer()
     glDeleteVertexArrays(1, &vertexArray_);
     glDeleteBuffers(1, &vertexBuffer_);
     glDeleteBuffers(1, &indexBuffer_);
+    glDeleteTextures(1, &texture_);
 }
 
 void Renderer::MeshBuffer::draw() const
@@ -378,7 +451,254 @@ void Renderer::MeshBuffer::draw() const
     glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
 }
 
-Renderer::Renderer(const CarAsset& asset) : ground_(makeGround(asset.groundHeight))
+void Renderer::MeshBuffer::drawInstances(GLuint buffer, GLsizei count) const
+{
+    glBindVertexArray(vertexArray_);
+    glBindBuffer(GL_ARRAY_BUFFER, buffer);
+    for (GLuint i = 0; i < 2; ++i) {
+        glEnableVertexAttribArray(i + 2);
+        glVertexAttribPointer(i + 2, 3, GL_FLOAT, GL_FALSE, 2 * sizeof(glm::vec3),
+                              reinterpret_cast<const void*>(i * sizeof(glm::vec3)));
+        glVertexAttribDivisor(i + 2, 1);
+    }
+    glDrawElementsInstanced(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr, count);
+}
+
+class Renderer::CampRender {
+public:
+    explicit CampRender(const std::filesystem::path& assets)
+        : quality_(sceneryQuality()), grass_(quality_)
+    {
+        if (quality_.distantShadowExtent > 0.0f) {
+            distantShadow_ = std::make_unique<SunShadow>(quality_.shadowResolution);
+        }
+        meshes_.reserve(propCount);
+        for (std::size_t i = 0; i < propCount; ++i) {
+            meshes_.emplace_back(makeCampProp(static_cast<CampProp>(i)));
+        }
+        for (std::size_t lod = quality_.nearestTreeLod; lod < lodMeshes_.size(); ++lod) {
+            const auto path = assets / ("camp-tree-lod" + std::to_string(lod) + ".glb");
+            if (!std::filesystem::is_regular_file(path)) continue;
+            try {
+                const auto parts = loadScenery(path);
+                if (treeHeight_ == 0.0f) {
+                    float low = std::numeric_limits<float>::max(), high = -low;
+                    for (const auto& part : parts) {
+                        for (const auto& vertex : part.vertices) {
+                            low = std::min(low, vertex.position.y);
+                            high = std::max(high, vertex.position.y);
+                        }
+                    }
+                    if (high - low < 0.01f) throw std::runtime_error("Tree mesh needs a positive height");
+                    treeBase_ = low;
+                    treeHeight_ = high - low;
+                }
+                for (const auto& part : parts) lodMeshes_[lod].emplace_back(part);
+            } catch (const std::runtime_error& error) {
+                std::cerr << path.filename().string() << ": " << error.what() << '\n';
+            }
+        }
+        glGenBuffers(static_cast<GLsizei>(buffers_.size()), buffers_.data());
+    }
+
+    ~CampRender() { glDeleteBuffers(static_cast<GLsizei>(buffers_.size()), buffers_.data()); }
+
+    void update(const CampWorld& world, const glm::vec3& position, const glm::vec3& eye, float screenScale)
+    {
+        if (seed_ != world.seed()) {
+            seed_ = world.seed();
+            chunks_.clear();
+        }
+        const auto center = world.tileAt(position);
+        const bool extended = quality_.viewDistance > 530.0f;
+        const double streamRadius = quality_.viewDistance / campTerrainTileSize + 1.5;
+        const auto span = static_cast<std::int64_t>(std::ceil(streamRadius));
+        const std::int64_t along = extended ? span : 3;
+        const std::int64_t across = extended ? span : 2;
+        const auto distance = [&](const CampTile& tile) {
+            const auto dx = tile[0] - center[0], dz = tile[1] - center[1];
+            return dx * dx + dz * dz;
+        };
+        const auto visible = [&](const CampTile& tile) {
+            return extended ? distance(tile) <= streamRadius * streamRadius
+                : std::abs(tile[0] - center[0]) <= along && std::abs(tile[1] - center[1]) <= across;
+        };
+        for (auto it = chunks_.begin(); it != chunks_.end();) {
+            if (!visible(it->first)) it = chunks_.erase(it);
+            else ++it;
+        }
+        struct Request { CampTile key; int stride; };
+        std::vector<Request> missing;
+        for (auto x = center[0] - along; x <= center[0] + along; ++x) {
+            for (auto z = center[1] - across; z <= center[1] + across; ++z) {
+                const CampTile key{x, z};
+                if (!visible(key)) continue;
+                const auto found = chunks_.find(key);
+                const auto dist = distance(key);
+                const int stride = !extended || dist <= 13 ? 1 : (dist <= 43 ? 2 : 4);
+                if (found == chunks_.end() || found->second.stride > stride) missing.push_back({key, stride});
+            }
+        }
+        std::sort(missing.begin(), missing.end(), [&](const Request& a, const Request& b) {
+            return distance(a.key) < distance(b.key);
+        });
+        const bool nearWork = !missing.empty() && missing.front().stride == 1;
+        const std::size_t budget = chunks_.empty() ? 9 : (extended && !nearWork ? 24 : 4);
+        for (std::size_t i = 0; i < std::min(budget, missing.size()); ++i) {
+            const auto& request = missing[i];
+            CampChunk data = world.buildChunk(request.key, request.stride);
+            glm::vec3 low(std::numeric_limits<float>::max()), high = -low;
+            for (const auto& surface : data.surfaces) {
+                for (const auto& vertex : surface.vertices) {
+                    low = glm::min(low, vertex.position);
+                    high = glm::max(high, vertex.position);
+                }
+            }
+            Chunk chunk{data.origin, request.stride, (low + high) * 0.5f, (high - low) * 0.5f, {}, std::move(data.props)};
+            for (const auto& surface : data.surfaces) {
+                if (!surface.indices.empty()) chunk.surfaces.emplace_back(surface);
+            }
+            chunks_.insert_or_assign(request.key, std::move(chunk));
+        }
+
+        for (auto& props : instances_) props.clear();
+        for (const auto& entry : chunks_) {
+            const Chunk& chunk = entry.second;
+            const glm::vec3 origin = world.localOrigin(chunk.origin);
+            const auto separation = glm::max(glm::abs(origin + chunk.boundsCenter - eye) - chunk.boundsHalf - 9.0f, 0.0f);
+            if (glm::dot(separation, separation) > quality_.propDistance * quality_.propDistance) continue;
+            for (const auto& prop : chunk.props) {
+                glm::vec3 centerPoint = origin + prop.center;
+                glm::vec3 size = prop.size;
+                const float distanceToEye = std::max(glm::length(centerPoint - eye), 1.0f);
+                if (distanceToEye > quality_.propDistance) continue;
+                const float apparentHeight = size.y * screenScale / distanceToEye;
+                if (prop.kind == CampProp::Tree) {
+                    if (apparentHeight < quality_.minTreePixels) continue;
+                    const bool near = quality_.nearestTreeLod == 0 && apparentHeight > quality_.nearTreePixels;
+                    const std::size_t lod = near ? 0 : apparentHeight > quality_.midTreePixels ? 1 : 2;
+                    if (!lodMeshes_[lod].empty()) {
+                        const float scale = size.y / treeHeight_;
+                        centerPoint.y -= size.y * 0.5f + treeBase_ * scale;
+                        instances_[propCount + lod].push_back({centerPoint, glm::vec3(scale)});
+                        continue;
+                    }
+                    const float trunk = size.y * 0.28f;
+                    if (apparentHeight > (quality_.nearestTreeLod == 0 ? 85.0f : 175.0f)) {
+                        instances_[static_cast<std::size_t>(CampProp::Timber)].push_back({
+                            centerPoint - up * (size.y - trunk) * 0.5f, {size.x * 0.12f, trunk, size.z * 0.12f}});
+                        centerPoint.y += trunk * 0.5f;
+                        size.y -= trunk;
+                    }
+                } else if (apparentHeight < 2.0f) {
+                    continue;
+                }
+                instances_[static_cast<std::size_t>(prop.kind)].push_back({centerPoint, size});
+            }
+        }
+        for (std::size_t i = 0; i < instances_.size(); ++i) {
+            auto& batch = instances_[i];
+            if (batch.empty()) {
+                localShadowCounts_[i] = distantShadowCounts_[i] = 0;
+                continue;
+            }
+            const auto within = [&](const Instance& instance, float extent) {
+                const glm::vec3 offset = instance.center - position;
+                const float radius = extent * 2.45f + glm::length(instance.size) * 0.5f;
+                return glm::dot(offset, offset) < radius * radius;
+            };
+            const auto localEnd = std::partition(batch.begin(), batch.end(), [&](const Instance& instance) {
+                return within(instance, quality_.shadowExtent);
+            });
+            localShadowCounts_[i] = static_cast<GLsizei>(localEnd - batch.begin());
+            if (distantShadow_) {
+                const auto distantEnd = std::partition(localEnd, batch.end(), [&](const Instance& instance) {
+                    return within(instance, quality_.distantShadowExtent);
+                });
+                distantShadowCounts_[i] = static_cast<GLsizei>(distantEnd - batch.begin());
+            }
+            glBindBuffer(GL_ARRAY_BUFFER, buffers_[i]);
+            glBufferData(GL_ARRAY_BUFFER, batch.size() * sizeof(Instance), batch.data(), GL_STREAM_DRAW);
+        }
+        grass_.update(world, position);
+    }
+
+    const SceneryQuality& quality() const { return quality_; }
+    const GrassRenderer& grass() const { return grass_; }
+    SunShadow* distantShadow() const { return distantShadow_.get(); }
+
+    template<class Draw>
+    void drawSurfaces(const CampWorld& world, const glm::mat4& clip, Draw draw) const
+    {
+        const auto rows = glm::transpose(clip);
+        const std::array<glm::vec4, 6> planes{rows[3] + rows[0], rows[3] - rows[0],
+            rows[3] + rows[1], rows[3] - rows[1], rows[3] + rows[2], rows[3] - rows[2]};
+        for (const auto& entry : chunks_) {
+            const Chunk& chunk = entry.second;
+            const auto origin = world.localOrigin(chunk.origin);
+            const auto center = glm::vec4(origin + chunk.boundsCenter, 1.0f);
+            if (std::any_of(planes.begin(), planes.end(), [&](const auto& plane) {
+                return glm::dot(plane, center) + glm::dot(glm::abs(glm::vec3(plane)), chunk.boundsHalf) < 0.0f;
+            })) continue;
+            const glm::mat4 model = glm::translate(glm::mat4(1.0f), origin);
+            for (const auto& surface : chunk.surfaces) draw(surface, model);
+        }
+    }
+
+    template<class Draw>
+    void drawProps(Draw draw, const std::array<GLsizei, static_cast<std::size_t>(CampProp::Count) + 3>* counts = nullptr) const
+    {
+        const auto countFor = [&](std::size_t i) {
+            return counts ? (*counts)[i] : static_cast<GLsizei>(instances_[i].size());
+        };
+        for (std::size_t i = 0; i < propCount; ++i) {
+            const auto count = countFor(i);
+            if (count > 0) draw(meshes_[i], buffers_[i], count);
+        }
+        for (std::size_t lod = 0; lod < lodMeshes_.size(); ++lod) {
+            const auto batch = propCount + lod;
+            const auto count = countFor(batch);
+            if (count == 0) continue;
+            for (const auto& mesh : lodMeshes_[lod]) {
+                draw(mesh, buffers_[batch], count);
+            }
+        }
+    }
+
+    template<class Draw>
+    void drawShadowProps(bool distant, Draw draw) const
+    {
+        drawProps(draw, distant ? &distantShadowCounts_ : &localShadowCounts_);
+    }
+
+private:
+    struct Instance { glm::vec3 center; glm::vec3 size; };
+    struct Chunk {
+        glm::dvec2 origin;
+        int stride;
+        glm::vec3 boundsCenter;
+        glm::vec3 boundsHalf;
+        std::vector<MeshBuffer> surfaces;
+        std::vector<CampPlacement> props;
+    };
+    static constexpr auto propCount = static_cast<std::size_t>(CampProp::Count);
+    const SceneryQuality& quality_;
+    GrassRenderer grass_;
+    std::unique_ptr<SunShadow> distantShadow_;
+    std::uint32_t seed_ = 0;
+    float treeBase_ = 0.0f;
+    float treeHeight_ = 0.0f;
+    std::map<CampTile, Chunk> chunks_;
+    std::vector<MeshBuffer> meshes_;
+    std::array<std::vector<MeshBuffer>, 3> lodMeshes_;
+    std::array<std::vector<Instance>, propCount + 3> instances_;
+    std::array<GLsizei, propCount + 3> localShadowCounts_{};
+    std::array<GLsizei, propCount + 3> distantShadowCounts_{};
+    std::array<GLuint, propCount + 3> buffers_{};
+};
+
+Renderer::Renderer(const CarAsset& asset, const std::filesystem::path& assets)
+    : ground_(makeGround(asset.groundHeight)), assets_(assets), shadow_(sceneryQuality().shadowResolution)
 {
     body_.reserve(asset.body.size());
     for (const MeshPart& part : asset.body) {
@@ -389,7 +709,7 @@ Renderer::Renderer(const CarAsset& asset) : ground_(makeGround(asset.groundHeigh
         wheel_.emplace_back(part);
     }
 
-    const std::string materialCode = std::string(skyLighting) + materialFragment;
+    const std::string materialCode = std::string(skyLighting) + shadowSamplingGlsl + materialFragment;
     const std::string skyCode = std::string(skyLighting) + skyFragment;
     program_ = createShaderProgram(vertexShader, materialCode.c_str());
     try {
@@ -399,10 +719,23 @@ Renderer::Renderer(const CarAsset& asset) : ground_(makeGround(asset.groundHeigh
         throw;
     }
     glGenVertexArrays(1, &skyArray_);
+    glGenTextures(1, &whiteTexture_);
+    glBindTexture(GL_TEXTURE_2D, whiteTexture_);
+    constexpr std::array<unsigned char, 4> white{255, 255, 255, 255};
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glUseProgram(program_);
+    glUniform1i(glGetUniformLocation(program_, "uBaseColor"), 4);
     skyClipToWorld_ = glGetUniformLocation(skyProgram_, "uClipToWorld");
     skyNight_ = glGetUniformLocation(skyProgram_, "uNight");
+    skyCamp_ = glGetUniformLocation(skyProgram_, "uCamp");
     skySunDirection_ = glGetUniformLocation(skyProgram_, "uSunDirection");
     model_ = glGetUniformLocation(program_, "uModel");
+    instanced_ = glGetUniformLocation(program_, "uInstanced");
+    textured_ = glGetUniformLocation(program_, "uTextured");
+    alphaMask_ = glGetUniformLocation(program_, "uAlphaMask");
+    campGround_ = glGetUniformLocation(program_, "uCampGround");
     viewProjection_ = glGetUniformLocation(program_, "uViewProjection");
     color_ = glGetUniformLocation(program_, "uColor");
     surface_ = glGetUniformLocation(program_, "uSurface");
@@ -414,7 +747,7 @@ Renderer::Renderer(const CarAsset& asset) : ground_(makeGround(asset.groundHeigh
     menuLight_ = glGetUniformLocation(program_, "uMenuLight");
     night_ = glGetUniformLocation(program_, "uNight");
     sunDirection_ = glGetUniformLocation(program_, "uSunDirection");
-    lightMatrix_ = glGetUniformLocation(program_, "uLightMatrix");
+    shadows_.initialize(program_, 0);
     menuSky_ = glGetUniformLocation(skyProgram_, "uMenu");
     menuTime_ = glGetUniformLocation(skyProgram_, "uTime");
     menuColor_ = glGetUniformLocation(skyProgram_, "uMenuColor");
@@ -424,12 +757,20 @@ Renderer::Renderer(const CarAsset& asset) : ground_(makeGround(asset.groundHeigh
 Renderer::~Renderer()
 {
     glDeleteVertexArrays(1, &skyArray_);
+    glDeleteTextures(1, &whiteTexture_);
     glDeleteProgram(skyProgram_);
     glDeleteProgram(program_);
 }
 
-void Renderer::draw(const MeshBuffer& mesh, const glm::mat4& model, bool night, bool braking) const
+void Renderer::draw(const MeshBuffer& mesh, const glm::mat4& model, bool night, bool braking,
+                    GLuint instances, GLsizei count) const
 {
+    glUniform1i(instanced_, instances != 0);
+    glUniform1i(textured_, mesh.texture() != 0);
+    glUniform2f(alphaMask_, mesh.alphaCutoff(), mesh.alphaFactor());
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_2D, mesh.texture() ? mesh.texture() : whiteTexture_);
+    glActiveTexture(GL_TEXTURE0);
     glUniformMatrix4fv(model_, 1, GL_FALSE, glm::value_ptr(model));
     const Surface& surface = mesh.surface();
     const bool emitting = surface.lightControl == LightControl::Always ||
@@ -440,13 +781,16 @@ void Renderer::draw(const MeshBuffer& mesh, const glm::mat4& model, bool night, 
     glUniform3fv(emissive_, 1, glm::value_ptr(emission));
     glUniform1f(lensTint_, surface.lensTint);
     glUniform4f(surface_, surface.metallic, surface.roughness, surface.clearcoat, surface.opacity);
-    mesh.draw();
+    if (instances != 0) mesh.drawInstances(instances, count);
+    else mesh.draw();
 }
 
 void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCamera& camera,
                       TireEffects& effects, int width, int height, bool night, const SceneView& scene)
 {
     const glm::mat4 identity(1.0f);
+    const CampWorld* camp = scene.menu ? nullptr : scene.camp;
+    const glm::vec3 lightDirection = camp ? (night ? moonDirection : campSunDirection) : sunDirection;
     const glm::vec3 direction = forward(car.heading);
     const glm::vec3 orbit = forward(car.heading + camera.yaw);
     const float pitch = 0.35f + camera.pitch;
@@ -457,14 +801,22 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     const float sideways = 0.026f * std::sin(7.0f * phase) + 0.012f * std::sin(11.0f * phase);
     const float vertical = 0.019f * std::sin(9.0f * phase + 0.6f) + 0.008f * std::sin(13.0f * phase);
     const glm::vec3 vibration = (cameraSide * sideways + up * vertical) * camera.speedEffect;
-    const glm::vec3 eye = focus - orbit * (cameraDistance * std::cos(pitch)) +
-                         up * (cameraDistance * std::sin(pitch)) + vibration;
+    glm::vec3 eye = focus - orbit * (cameraDistance * std::cos(pitch)) +
+                   up * (cameraDistance * std::sin(pitch)) + vibration;
+    if (camp) eye.y = std::max(eye.y, camp->surface(eye).height + 0.62f);
     const glm::vec3 target = focus + direction * 0.45f + vibration * 0.25f;
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
     const glm::mat4 view = glm::lookAt(eye, target, up);
     const float fov = 56.0f + 5.5f * camera.speedEffect;
     constexpr float menuAspect = 1280.0f / 720.0f;
-    glm::mat4 projection = glm::perspective(glm::radians(fov), scene.menu ? menuAspect : aspect, 0.05f, 530.0f);
+    if (camp) {
+        if (!camp_) camp_ = std::make_unique<CampRender>(assets_);
+    } else if (scene.course != Course::DerelictCamp) {
+        camp_.reset();
+    }
+    const float viewDistance = camp ? camp_->quality().viewDistance : 530.0f;
+    const float nearPlane = viewDistance > 530.0f ? 0.14f : 0.05f;
+    glm::mat4 projection = glm::perspective(glm::radians(fov), scene.menu ? menuAspect : aspect, nearPlane, viewDistance);
     if (scene.menu) {
         const float widthFit = std::min(1.0f, menuAspect / aspect);
         const float heightFit = std::min(1.0f, aspect / menuAspect);
@@ -474,8 +826,17 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
         projection[2][1] = (scene.titleDrift ? 0.10f : -0.02f) * heightFit;
     }
     const glm::mat4 viewProjection = projection * view;
+    if (camp) {
+        camp_->update(*camp, car.position, eye, projection[1][1] * height * 0.5f);
+    }
 
-    const glm::mat4 baseModel = glm::rotate(glm::translate(identity, car.position), car.heading, up);
+    glm::mat4 baseModel = glm::translate(identity, car.position);
+    if (camp) {
+        baseModel *= glm::mat4(campGroundFrame(car));
+        baseModel = glm::translate(baseModel, -up * asset.groundHeight);
+    } else {
+        baseModel = glm::rotate(baseModel, car.heading, up);
+    }
     const CarSpec& spec = carSpec(asset.model);
     const float pivot = asset.groundHeight + spec.centerOfGravityHeight;
     glm::mat4 bodyModel = glm::translate(baseModel, up * (pivot + car.suspension.heave));
@@ -487,8 +848,9 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     for (std::size_t i = 0; i < asset.hubs.size(); ++i) {
         glm::vec3 groundHub = asset.hubs[i];
         groundHub.y = asset.groundHeight + asset.wheelRadius;
+        if (camp) groundHub.y += car.wheels[i].groundTravel;
         const glm::mat4 hub = glm::translate(baseModel, groundHub);
-        const glm::mat4 steering = i < 2 ? glm::rotate(hub, car.steering, up) : hub;
+        const glm::mat4 steering = i < 2 ? glm::rotate(hub, frontWheelSteering(asset, i, car.steering), up) : hub;
         const glm::mat4 roll = glm::rotate(identity, car.wheels[i].angle, axle);
         const glm::mat4 facing = i % 2 == 1 ? glm::rotate(identity, pi, up) : identity;
         wheelModels[i] = steering * roll * facing * asset.wheelTransform;
@@ -508,14 +870,36 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
             }
         }
     };
-    glm::mat4 lightMatrix(1.0f);
-    if (!night && !scene.menu) {
-        lightMatrix = shadow_.begin(car.position, sunDirection);
-        drawOpaque([&](const MeshBuffer& part, const glm::mat4& model) {
-            shadow_.setModel(model);
-            part.draw();
-        });
-        shadow_.end();
+    SceneShadows lighting;
+    lighting.nearDepth = shadow_.depthTexture();
+    if ((!night || camp) && !scene.menu) {
+        const auto cast = [&](SunShadow& map, float extent, bool distant) {
+            const auto matrix = map.begin(car.position, lightDirection, extent);
+            const auto drawDepth = [&](const MeshBuffer& part, const glm::mat4& model) {
+                map.setModel(model);
+                map.setMask(part.texture() ? part.texture() : whiteTexture_, part.alphaCutoff(), part.alphaFactor());
+                part.draw();
+            };
+            drawOpaque(drawDepth);
+            if (camp) {
+                camp_->drawSurfaces(*camp, matrix, drawDepth);
+                map.setModel(identity);
+                map.setInstanced(true);
+                camp_->drawShadowProps(distant, [&](const MeshBuffer& prop, GLuint buffer, GLsizei count) {
+                    map.setMask(prop.texture() ? prop.texture() : whiteTexture_, prop.alphaCutoff(), prop.alphaFactor());
+                    prop.drawInstances(buffer, count);
+                });
+            }
+            map.end();
+            return matrix;
+        };
+        lighting.nearMatrix = cast(shadow_, camp ? camp_->quality().shadowExtent : 12.0f, false);
+        if (camp) {
+            if (auto* distant = camp_->distantShadow()) {
+                lighting.distantMatrix = cast(*distant, camp_->quality().distantShadowExtent, true);
+                lighting.distantDepth = distant->depthTexture();
+            }
+        }
     }
 
     post_.begin(width, height);
@@ -525,10 +909,11 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     const glm::mat4 clipToSky = glm::inverse(projection * glm::mat4(glm::mat3(view)));
     glUniformMatrix4fv(skyClipToWorld_, 1, GL_FALSE, glm::value_ptr(clipToSky));
     glUniform1i(skyNight_, night ? GL_TRUE : GL_FALSE);
+    glUniform1i(skyCamp_, camp != nullptr);
     glUniform1i(menuSky_, scene.menu ? GL_TRUE : GL_FALSE);
     glUniform1f(menuTime_, scene.time);
     glUniform1f(menuColor_, scene.menuColor);
-    glUniform3fv(skySunDirection_, 1, glm::value_ptr(sunDirection));
+    glUniform3fv(skySunDirection_, 1, glm::value_ptr(lightDirection));
     glBindVertexArray(skyArray_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glEnable(GL_DEPTH_TEST);
@@ -538,17 +923,31 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     }
 
     glUseProgram(program_);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, shadow_.depthTexture());
+    shadows_.bind(lighting);
     glUniform1i(night_, night ? GL_TRUE : GL_FALSE);
     glUniform1i(menuLight_, scene.menu ? GL_TRUE : GL_FALSE);
-    glUniform1i(course_, static_cast<int>(scene.course));
-    glUniform3fv(sunDirection_, 1, glm::value_ptr(sunDirection));
-    glUniformMatrix4fv(lightMatrix_, 1, GL_FALSE, glm::value_ptr(lightMatrix));
+    glUniform1i(campGround_, GL_FALSE);
+    const Course shaderCourse = scene.menu ? Course::TestGrid : scene.course;
+    glUniform1i(course_, static_cast<int>(shaderCourse));
+    glUniform3fv(sunDirection_, 1, glm::value_ptr(lightDirection));
     glUniform3fv(eye_, 1, glm::value_ptr(eye));
     glUniformMatrix4fv(viewProjection_, 1, GL_FALSE, glm::value_ptr(viewProjection));
 
-    if (!scene.menu) {
+    if (camp) {
+        glUniform1i(groundPass_, GL_FALSE);
+        glUniform1i(campGround_, GL_TRUE);
+        camp_->drawSurfaces(*camp, viewProjection, [&](const MeshBuffer& part, const glm::mat4& model) {
+            draw(part, model, night, false);
+        });
+        effects.renderMarks(viewProjection, 0, true);
+        glUseProgram(program_);
+        glUniform1i(campGround_, GL_FALSE);
+        camp_->drawProps([&](const MeshBuffer& prop, GLuint buffer, GLsizei count) {
+            draw(prop, identity, night, false, buffer, count);
+        });
+        camp_->grass().draw(viewProjection, lighting, camp->origin(), scene.time, night);
+        glUseProgram(program_);
+    } else if (!scene.menu) {
         glUniform1i(groundPass_, GL_TRUE);
         draw(ground_, identity, night, false);
         effects.renderMarks(viewProjection);
@@ -589,7 +988,12 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     glDisable(GL_BLEND);
 
     if (!scene.menu || scene.titleDrift) effects.renderSmoke(viewProjection, view, eye, night);
-    const glm::vec4 projectedSun = viewProjection * glm::vec4(sunDirection, 0.0f);
+    if (camp) {
+        const auto& quality = camp_->quality();
+        post_.renderCampFog(glm::inverse(viewProjection), eye, lighting, lightDirection, camp->origin(), car.position.y,
+                            scene.time, night, quality.fogScale, quality.fogSteps, viewDistance);
+    }
+    const glm::vec4 projectedSun = viewProjection * glm::vec4(lightDirection, 0.0f);
     glm::vec3 sunScreen(0.0f);
     if (!night && !scene.menu && projectedSun.w > 0.0f) {
         sunScreen = glm::vec3(glm::vec2(projectedSun) * (0.5f / projectedSun.w) + 0.5f, 1.0f);

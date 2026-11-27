@@ -3,6 +3,11 @@
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
 #include <nlohmann/json.hpp>
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_NO_STDIO
+#define STBI_ONLY_PNG
+#define STBI_ONLY_JPEG
+#include <stb_image.h>
 
 #include <algorithm>
 #include <cctype>
@@ -21,6 +26,28 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace {
+
+struct GltfFile {
+    explicit GltfFile(const std::filesystem::path& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        if (!file) throw std::runtime_error("Cannot open " + path.string());
+        bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+        cgltf_options options{};
+        cgltf_data* parsed = nullptr;
+        if (cgltf_parse(&options, bytes.data(), bytes.size(), &parsed) != cgltf_result_success) {
+            throw std::runtime_error("Cannot parse " + path.string());
+        }
+        data.reset(parsed);
+        if (cgltf_load_buffers(&options, data.get(), nullptr) != cgltf_result_success ||
+            cgltf_validate(data.get()) != cgltf_result_success) {
+            throw std::runtime_error("Invalid mesh buffers in " + path.string());
+        }
+    }
+
+    std::vector<char> bytes;
+    std::unique_ptr<cgltf_data, decltype(&cgltf_free)> data{nullptr, cgltf_free};
+};
 
 std::string_view blenderBaseName(std::string_view name)
 {
@@ -103,7 +130,7 @@ glm::vec3 findHub(const cgltf_data& data, std::string_view socket, std::string_v
     throw std::runtime_error("Missing wheel socket: " + std::string(socket));
 }
 
-Surface readSurface(const cgltf_material* material, const glm::vec3& fallbackColor)
+Surface readSurface(const cgltf_material* material, const glm::vec3& fallbackColor, bool carMaterials)
 {
     Surface surface;
     surface.color = fallbackColor;
@@ -124,6 +151,7 @@ Surface readSurface(const cgltf_material* material, const glm::vec3& fallbackCol
     if (material->has_clearcoat) {
         surface.clearcoat = material->clearcoat.clearcoat_factor;
     }
+    if (!carMaterials) return surface;
 
     std::string name(blenderBaseName(material->name ? material->name : ""));
     std::transform(name.begin(), name.end(), name.begin(),
@@ -165,7 +193,64 @@ Surface readSurface(const cgltf_material* material, const glm::vec3& fallbackCol
     return surface;
 }
 
-std::vector<MeshPart> readMesh(const cgltf_node& node, const glm::mat4& transform, const glm::vec3& fallbackColor)
+using DecodedImages = std::vector<std::pair<const cgltf_image*, std::shared_ptr<const MeshPart::Image>>>;
+
+void readSceneryMaterial(MeshPart& part, const cgltf_primitive& primitive, DecodedImages& images)
+{
+    const auto* material = primitive.material;
+    if (!material) return;
+    if (material->alpha_mode == cgltf_alpha_mode_mask) part.alphaCutoff = material->alpha_cutoff;
+    if (!material->has_pbr_metallic_roughness) return;
+    const auto& pbr = material->pbr_metallic_roughness;
+    part.alphaFactor = pbr.base_color_factor[3];
+    const auto& view = pbr.base_color_texture;
+    if (!view.texture) return;
+
+    const cgltf_image* image = view.texture->image;
+    const auto* buffer = image ? image->buffer_view : nullptr;
+    if (!buffer || buffer->size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("Scenery base color needs an embedded PNG or JPEG");
+    }
+    const int texCoord = view.has_transform && view.transform.has_texcoord ? view.transform.texcoord : view.texcoord;
+    const auto* accessor = cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, texCoord);
+    if (!accessor || accessor->count != part.vertices.size()) {
+        throw std::runtime_error("Scenery base color texture has no matching UVs");
+    }
+    std::vector<float> uvs(part.vertices.size() * 2);
+    if (cgltf_accessor_unpack_floats(accessor, uvs.data(), uvs.size()) != uvs.size()) {
+        throw std::runtime_error("Could not read scenery UVs");
+    }
+    const auto& transform = view.transform;
+    const float sine = std::sin(transform.rotation);
+    const float cosine = std::cos(transform.rotation);
+    for (std::size_t i = 0; i < part.vertices.size(); ++i) {
+        glm::vec2 uv{uvs[i * 2], uvs[i * 2 + 1]};
+        if (view.has_transform) {
+            uv *= glm::make_vec2(transform.scale);
+            uv = glm::vec2(cosine * uv.x - sine * uv.y, sine * uv.x + cosine * uv.y) + glm::make_vec2(transform.offset);
+        }
+        part.vertices[i].uv = uv;
+    }
+
+    const auto cached = std::find_if(images.begin(), images.end(), [image](const auto& item) { return item.first == image; });
+    if (cached != images.end()) {
+        part.baseColor = cached->second;
+        return;
+    }
+    auto decoded = std::make_shared<MeshPart::Image>();
+    const auto* storage = static_cast<const unsigned char*>(buffer->buffer->data) + buffer->offset;
+    const std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
+        stbi_load_from_memory(storage, static_cast<int>(buffer->size), &decoded->width, &decoded->height, nullptr, 4),
+        stbi_image_free);
+    if (!pixels) throw std::runtime_error("Could not decode the scenery base color texture");
+    const auto count = static_cast<std::size_t>(decoded->width) * decoded->height * 4;
+    decoded->rgba.assign(pixels.get(), pixels.get() + count);
+    part.baseColor = decoded;
+    images.emplace_back(image, std::move(decoded));
+}
+
+std::vector<MeshPart> readMesh(const cgltf_node& node, const glm::mat4& transform, const glm::vec3& fallbackColor,
+                               DecodedImages* images = nullptr)
 {
     const glm::mat3 linearTransform(transform);
     const glm::mat3 normalTransform = glm::transpose(glm::inverse(linearTransform));
@@ -176,18 +261,18 @@ std::vector<MeshPart> readMesh(const cgltf_node& node, const glm::mat4& transfor
         const cgltf_accessor* positions = cgltf_find_accessor(&primitive, cgltf_attribute_type_position, 0);
         const cgltf_accessor* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
         if (primitive.type != cgltf_primitive_type_triangles || !positions) {
-            throw std::runtime_error("Expected a triangle mesh on " + std::string(node.name));
+            throw std::runtime_error("Expected a triangle mesh on " + std::string(node.name ? node.name : "unnamed node"));
         }
 
         std::vector<float> coordinates(positions->count * 3);
         std::vector<float> normalValues(coordinates.size());
         if (cgltf_accessor_unpack_floats(positions, coordinates.data(), coordinates.size()) != coordinates.size() ||
             (normals && cgltf_accessor_unpack_floats(normals, normalValues.data(), normalValues.size()) != normalValues.size())) {
-            throw std::runtime_error("Could not read vertices on " + std::string(node.name));
+            throw std::runtime_error("Could not read vertices on " + std::string(node.name ? node.name : "unnamed node"));
         }
 
         MeshPart part;
-        part.surface = readSurface(primitive.material, fallbackColor);
+        part.surface = readSurface(primitive.material, fallbackColor, images == nullptr);
         part.vertices.reserve(positions->count);
         for (std::size_t vertex = 0; vertex < coordinates.size(); vertex += 3) {
             const glm::vec3 position = glm::make_vec3(coordinates.data() + vertex);
@@ -216,11 +301,12 @@ std::vector<MeshPart> readMesh(const cgltf_node& node, const glm::mat4& transfor
         }
 
         if (!part.vertices.empty() && !part.indices.empty()) {
+            if (images) readSceneryMaterial(part, primitive, *images);
             mesh.push_back(std::move(part));
         }
     }
     if (mesh.empty()) {
-        throw std::runtime_error("Empty mesh on " + std::string(node.name));
+        throw std::runtime_error("Empty mesh on " + std::string(node.name ? node.name : "unnamed node"));
     }
     return mesh;
 }
@@ -269,21 +355,8 @@ const CarSpec& carSpec(CarModel model)
 
 CarAsset loadCar(const std::filesystem::path& path, CarModel model)
 {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Cannot open " + path.string());
-    }
-    const std::vector<char> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    cgltf_options options{};
-    cgltf_data* parsed = nullptr;
-    if (cgltf_parse(&options, bytes.data(), bytes.size(), &parsed) != cgltf_result_success) {
-        throw std::runtime_error("Cannot parse " + path.string());
-    }
-    const std::unique_ptr<cgltf_data, decltype(&cgltf_free)> data(parsed, cgltf_free);
-    if (cgltf_load_buffers(&options, data.get(), nullptr) != cgltf_result_success ||
-        cgltf_validate(data.get()) != cgltf_result_success) {
-        throw std::runtime_error("Invalid mesh buffers in " + path.string());
-    }
+    const GltfFile file(path);
+    const auto& data = file.data;
 
     const bool isGale = model == CarModel::Gale;
     const cgltf_node* galeBody = isGale ? exactNode(*data, "Body.001", true) : nullptr;
@@ -356,4 +429,29 @@ CarAsset loadCar(const std::filesystem::path& path, CarModel model)
     }
     car.groundHeight = std::min(front.y, rear.y) - car.wheelRadius;
     return car;
+}
+
+std::vector<MeshPart> loadScenery(const std::filesystem::path& path)
+{
+    const GltfFile file(path);
+    const auto& data = *file.data;
+    const cgltf_scene* scene = data.scene ? data.scene : data.scenes_count > 0 ? &data.scenes[0] : nullptr;
+    DecodedImages images;
+    std::vector<MeshPart> parts;
+    const auto visit = [&](const auto& self, const cgltf_node& node) -> void {
+        if (node.mesh) {
+            auto meshes = readMesh(node, nodeTransform(node), {0.14f, 0.38f, 0.17f}, &images);
+            parts.insert(parts.end(), std::make_move_iterator(meshes.begin()), std::make_move_iterator(meshes.end()));
+        }
+        for (std::size_t i = 0; i < node.children_count; ++i) self(self, *node.children[i]);
+    };
+    if (scene) {
+        for (std::size_t i = 0; i < scene->nodes_count; ++i) visit(visit, *scene->nodes[i]);
+    } else {
+        for (std::size_t i = 0; i < data.nodes_count; ++i) {
+            if (!data.nodes[i].parent) visit(visit, data.nodes[i]);
+        }
+    }
+    if (parts.empty()) throw std::runtime_error("No scenery mesh in " + path.string());
+    return parts;
 }

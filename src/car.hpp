@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -11,6 +12,7 @@
 struct Vertex {
     glm::vec3 position;
     glm::vec3 normal;
+    glm::vec2 uv{0.0f};
 };
 
 enum class LightControl { Always, Night, Brake };
@@ -31,6 +33,14 @@ struct MeshPart {
     std::vector<std::uint32_t> indices;
     Surface surface;
     bool mirrorAcrossBody = false;
+    struct Image {
+        int width = 0;
+        int height = 0;
+        std::vector<unsigned char> rgba;
+    };
+    std::shared_ptr<const Image> baseColor;
+    float alphaFactor = 1.0f;
+    float alphaCutoff = -1.0f;
 };
 
 enum class CarModel { SlimRider, Gale };
@@ -69,3 +79,4 @@ struct CarAsset {
 
 const CarSpec& carSpec(CarModel model);
 CarAsset loadCar(const std::filesystem::path& path, CarModel model = CarModel::SlimRider);
+std::vector<MeshPart> loadScenery(const std::filesystem::path& path);

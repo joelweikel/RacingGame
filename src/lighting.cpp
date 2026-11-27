@@ -1,8 +1,11 @@
 #include "lighting.hpp"
 #include "shader.hpp"
+#include "shadow_sampling.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
+#include <string>
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -13,19 +16,76 @@
 
 namespace {
 
-constexpr int shadowResolution = 2048;
-
 constexpr const char* shadowVertex = R"glsl(
 layout (location = 0) in vec3 position;
+layout (location = 2) in vec3 instanceCenter;
+layout (location = 3) in vec3 instanceSize;
+layout (location = 4) in vec2 uv;
+out vec2 textureUV;
 uniform mat4 uLightMatrix;
 uniform mat4 uModel;
+uniform bool uInstanced;
 void main() {
-    gl_Position = uLightMatrix * uModel * vec4(position, 1.0);
+    vec3 local = uInstanced ? position * instanceSize + instanceCenter : position;
+    textureUV = uv;
+    gl_Position = uLightMatrix * uModel * vec4(local, 1.0);
 }
 )glsl";
 
 constexpr const char* shadowFragment = R"glsl(
-void main() {}
+in vec2 textureUV;
+uniform sampler2D uBaseColor;
+uniform vec2 uAlphaMask;
+void main() {
+    if (uAlphaMask.x >= 0.0 && texture(uBaseColor, textureUV).a * uAlphaMask.y < uAlphaMask.x) discard;
+}
+)glsl";
+
+constexpr const char* campFogFragment = R"glsl(
+in vec2 clipPosition;
+uniform sampler2D uDepth;
+uniform mat4 uClipToWorld;
+uniform vec3 uEye;
+uniform vec3 uLightDirection;
+uniform float uGroundHeight;
+uniform vec2 uFogPhase;
+uniform float uTime;
+uniform bool uNight;
+uniform int uSteps;
+uniform float uDistantDensity;
+out vec4 pixelColor;
+
+void main() {
+    vec2 uv = clipPosition * 0.5 + 0.5;
+    float depth = texture(uDepth, uv).r;
+    vec4 world = uClipToWorld * vec4(clipPosition, depth * 2.0 - 1.0, 1.0);
+    vec3 offset = world.xyz / world.w - uEye;
+    float distanceToSurface = length(offset);
+    vec3 ray = offset / max(distanceToSurface, 0.001);
+    float march = min(distanceToSurface, 118.0);
+    float stride = march / float(uSteps);
+    float jitter = fract(52.9829189 * fract(dot(floor(gl_FragCoord.xy), vec2(0.06711056, 0.00583715))));
+    float phase = 0.28 + 1.85 * pow(max(dot(ray, uLightDirection), 0.0), 11.0);
+    vec3 fill = uNight ? vec3(0.053, 0.078, 0.116) : vec3(0.40, 0.49, 0.54);
+    vec3 key = uNight ? vec3(0.16, 0.24, 0.39) : vec3(0.23, 0.20, 0.16);
+    vec3 light = vec3(0.0);
+    float transmission = 1.0;
+    for (int i = 0; i < 28; ++i) {
+        if (i >= uSteps) break;
+        vec3 point = uEye + ray * stride * (float(i) + jitter);
+        float bank = sin(point.x * 0.033 + point.z * 0.050 + uFogPhase.x + uTime * 0.20) *
+                     sin(point.z * 0.094 - point.x * 0.015 + uFogPhase.y - uTime * 0.13);
+        float altitude = max(point.y - uGroundHeight - 1.7 - bank * 2.5, 0.0);
+        float density = 0.0039 + (0.0115 + bank * 0.0055) * exp(-altitude * 0.15);
+        float sampleTransmission = exp(-density * stride);
+        light += transmission * (1.0 - sampleTransmission) *
+                 (fill + key * phase * sceneShadow(point, 0.00086, 1));
+        transmission *= sampleTransmission;
+    }
+    float distant = exp(-max(distanceToSurface - march, 0.0) * uDistantDensity);
+    light += transmission * (1.0 - distant) * fill;
+    pixelColor = vec4(light, transmission * distant);
+}
 )glsl";
 
 constexpr const char* downsampleFragment = R"glsl(
@@ -86,6 +146,8 @@ in vec2 clipPosition;
 uniform sampler2D uScene;
 uniform sampler2D uGlow;
 uniform sampler2D uDepth;
+uniform sampler2D uFog;
+uniform bool uFogEnabled;
 uniform vec3 uSunScreen;
 uniform float uAspect;
 uniform float uSpeedEffect;
@@ -128,6 +190,28 @@ float compressPeak(float peak) {
     return min(peak, 0.82) + 0.18 * (1.0 - exp(-highlight / 0.49));
 }
 
+vec4 upsampleFog(vec2 uv) {
+    vec2 size = vec2(textureSize(uFog, 0));
+    vec2 pixel = uv * size - 0.5;
+    vec2 fraction = fract(pixel);
+    vec2 base = (floor(pixel) + 0.5) / size;
+    float depth = max(1e-6, 1.0 - texture(uDepth, uv).r);
+    vec4 fog = vec4(0.0);
+    float sum = 0.0;
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            vec2 tap = base + vec2(float(x), float(y)) / size;
+            float sampleDepth = max(1e-6, 1.0 - texture(uDepth, tap).r);
+            vec2 weight = vec2(x == 0 ? 1.0 - fraction.x : fraction.x,
+                               y == 0 ? 1.0 - fraction.y : fraction.y);
+            float blend = weight.x * weight.y * exp(-8.0 * abs(log2(sampleDepth / depth)));
+            fog += texture(uFog, tap) * blend;
+            sum += blend;
+        }
+    }
+    return sum > 0.00001 ? fog / sum : texture(uFog, uv);
+}
+
 void main() {
     vec2 uv = clipPosition * 0.5 + 0.5;
     float ring = 0.0;
@@ -143,6 +227,10 @@ void main() {
     vec3 scene = texture(uScene, uv).rgb;
     if (any(isnan(scene)) || any(isinf(scene))) {
         scene = vec3(0.094, 0.108, 0.119);
+    }
+    if (uFogEnabled) {
+        vec4 fog = upsampleFog(uv);
+        scene = scene * fog.a + fog.rgb;
     }
     vec3 color = scene + texture(uGlow, uv).rgb * 0.40 + flare(uv) + ring * vec3(0.24, 0.61, 0.85);
     float peak = max(color.r, max(color.g, color.b));
@@ -180,15 +268,24 @@ void bindTexture(GLenum unit, GLuint texture)
 
 } // namespace
 
-SunShadow::SunShadow()
+SunShadow::SunShadow(int resolution)
 {
+    GLint maxTexture = 0;
+    GLint maxViewport[2]{};
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexture);
+    glGetIntegerv(GL_MAX_VIEWPORT_DIMS, maxViewport);
+    resolution_ = std::min({resolution, maxTexture, maxViewport[0], maxViewport[1]});
     program_ = createShaderProgram(shadowVertex, shadowFragment);
     lightMatrix_ = glGetUniformLocation(program_, "uLightMatrix");
     model_ = glGetUniformLocation(program_, "uModel");
+    instanced_ = glGetUniformLocation(program_, "uInstanced");
+    alphaMask_ = glGetUniformLocation(program_, "uAlphaMask");
+    glUseProgram(program_);
+    glUniform1i(glGetUniformLocation(program_, "uBaseColor"), 4);
     glGenFramebuffers(1, &framebuffer_);
     glGenTextures(1, &depth_);
     allocateTexture(depth_, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT,
-                    shadowResolution, shadowResolution, GL_NEAREST);
+                    resolution_, resolution_, GL_NEAREST);
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depth_, 0);
     constexpr GLenum noColor = GL_NONE;
@@ -212,24 +309,36 @@ SunShadow::~SunShadow()
     glDeleteProgram(program_);
 }
 
-glm::mat4 SunShadow::begin(const glm::vec3& carPosition, const glm::vec3& sunDirection)
+glm::mat4 SunShadow::begin(const glm::vec3& carPosition, const glm::vec3& lightDirection, float extent)
 {
-    glm::mat4 view = glm::lookAt(carPosition + sunDirection * 20.0f, carPosition, glm::vec3(0.0f, 1.0f, 0.0f));
-    constexpr float extent = 12.0f;
-    constexpr float texel = 2.0f * extent / shadowResolution;
+    const float distance = extent * (20.0f / 12.0f);
+    glm::mat4 view = glm::lookAt(carPosition + lightDirection * distance, carPosition, glm::vec3(0.0f, 1.0f, 0.0f));
+    const float texel = 2.0f * extent / resolution_;
     view[3].x = glm::round(view[3].x / texel) * texel;
     view[3].y = glm::round(view[3].y / texel) * texel;
-    const glm::mat4 lightMatrix = glm::ortho(-extent, extent, -extent, extent, 5.0f, 40.0f) * view;
+    const glm::mat4 lightMatrix = glm::ortho(-extent, extent, -extent, extent, 5.0f, distance * 2.0f) * view;
 
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_);
-    glViewport(0, 0, shadowResolution, shadowResolution);
+    glViewport(0, 0, resolution_, resolution_);
     glEnable(GL_DEPTH_TEST);
     glClear(GL_DEPTH_BUFFER_BIT);
     glEnable(GL_POLYGON_OFFSET_FILL);
     glPolygonOffset(1.1f, 3.0f);
     glUseProgram(program_);
+    setInstanced(false);
     glUniformMatrix4fv(lightMatrix_, 1, GL_FALSE, glm::value_ptr(lightMatrix));
     return lightMatrix;
+}
+
+void SunShadow::setInstanced(bool enabled) const
+{
+    glUniform1i(instanced_, enabled);
+}
+
+void SunShadow::setMask(GLuint texture, float cutoff, float factor) const
+{
+    bindTexture(GL_TEXTURE4, texture);
+    glUniform2f(alphaMask_, cutoff, factor);
 }
 
 void SunShadow::setModel(const glm::mat4& model) const
@@ -242,15 +351,39 @@ void SunShadow::end() const
     glDisable(GL_POLYGON_OFFSET_FILL);
 }
 
+void ShadowSampling::initialize(GLuint program, int nearUnit)
+{
+    nearUnit_ = GL_TEXTURE0 + nearUnit;
+    nearMatrix_ = glGetUniformLocation(program, "uLightMatrix");
+    distantMatrix_ = glGetUniformLocation(program, "uDistantLightMatrix");
+    hasDistant_ = glGetUniformLocation(program, "uHasDistantShadow");
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(program, "uShadowMap"), nearUnit);
+    glUniform1i(glGetUniformLocation(program, "uDistantShadowMap"), 5);
+}
+
+void ShadowSampling::bind(const SceneShadows& shadows) const
+{
+    bindTexture(nearUnit_, shadows.nearDepth);
+    bindTexture(GL_TEXTURE5, shadows.distantDepth ? shadows.distantDepth : shadows.nearDepth);
+    glUniformMatrix4fv(nearMatrix_, 1, GL_FALSE, glm::value_ptr(shadows.nearMatrix));
+    glUniformMatrix4fv(distantMatrix_, 1, GL_FALSE, glm::value_ptr(shadows.distantMatrix));
+    glUniform1i(hasDistant_, shadows.distantDepth != 0);
+    glActiveTexture(GL_TEXTURE0);
+}
+
 PostProcess::PostProcess()
 {
     try {
         downsampleProgram_ = createShaderProgram(fullscreenVertex, downsampleFragment);
         upsampleProgram_ = createShaderProgram(fullscreenVertex, upsampleFragment);
         presentProgram_ = createShaderProgram(fullscreenVertex, presentFragment);
+        const std::string fogCode = std::string(shadowSamplingGlsl) + campFogFragment;
+        fogProgram_ = createShaderProgram(fullscreenVertex, fogCode.c_str());
     } catch (...) {
         glDeleteProgram(downsampleProgram_);
         glDeleteProgram(upsampleProgram_);
+        glDeleteProgram(presentProgram_);
         throw;
     }
     extractHighlights_ = glGetUniformLocation(downsampleProgram_, "uExtractHighlights");
@@ -262,11 +395,25 @@ PostProcess::PostProcess()
     glUseProgram(presentProgram_);
     glUniform1i(glGetUniformLocation(presentProgram_, "uGlow"), 1);
     glUniform1i(glGetUniformLocation(presentProgram_, "uDepth"), 2);
+    glUniform1i(glGetUniformLocation(presentProgram_, "uFog"), 3);
+    fogEnabledLocation_ = glGetUniformLocation(presentProgram_, "uFogEnabled");
+    fogShadows_.initialize(fogProgram_, 1);
+    fogClip_ = glGetUniformLocation(fogProgram_, "uClipToWorld");
+    fogEye_ = glGetUniformLocation(fogProgram_, "uEye");
+    fogLightDirection_ = glGetUniformLocation(fogProgram_, "uLightDirection");
+    fogGroundHeight_ = glGetUniformLocation(fogProgram_, "uGroundHeight");
+    fogPhase_ = glGetUniformLocation(fogProgram_, "uFogPhase");
+    fogTime_ = glGetUniformLocation(fogProgram_, "uTime");
+    fogNight_ = glGetUniformLocation(fogProgram_, "uNight");
+    fogSteps_ = glGetUniformLocation(fogProgram_, "uSteps");
+    fogDistantDensity_ = glGetUniformLocation(fogProgram_, "uDistantDensity");
 
     glGenFramebuffers(1, &sceneFrame_);
+    glGenFramebuffers(1, &fogFrame_);
     glGenFramebuffers(static_cast<GLsizei>(glowFrames_.size()), glowFrames_.data());
     glGenTextures(1, &scene_);
     glGenTextures(1, &depth_);
+    glGenTextures(1, &fogTexture_);
     glGenTextures(static_cast<GLsizei>(glow_.size()), glow_.data());
     glGenVertexArrays(1, &array_);
 }
@@ -274,14 +421,17 @@ PostProcess::PostProcess()
 PostProcess::~PostProcess()
 {
     glDeleteFramebuffers(1, &sceneFrame_);
+    glDeleteFramebuffers(1, &fogFrame_);
     glDeleteFramebuffers(static_cast<GLsizei>(glowFrames_.size()), glowFrames_.data());
     glDeleteTextures(1, &scene_);
     glDeleteTextures(1, &depth_);
+    glDeleteTextures(1, &fogTexture_);
     glDeleteTextures(static_cast<GLsizei>(glow_.size()), glow_.data());
     glDeleteVertexArrays(1, &array_);
     glDeleteProgram(downsampleProgram_);
     glDeleteProgram(upsampleProgram_);
     glDeleteProgram(presentProgram_);
+    glDeleteProgram(fogProgram_);
 }
 
 void PostProcess::resize(int width, int height)
@@ -321,11 +471,49 @@ void PostProcess::resize(int width, int height)
 
 void PostProcess::begin(int width, int height)
 {
+    fogEnabled_ = false;
     if (width_ != width || height_ != height) {
         resize(width, height);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, sceneFrame_);
     glViewport(0, 0, width_, height_);
+}
+
+void PostProcess::renderCampFog(const glm::mat4& clipToWorld, const glm::vec3& eye,
+                               const SceneShadows& shadows, const glm::vec3& lightDirection,
+                               glm::dvec2 origin, float groundHeight, float time, bool night,
+                               float resolutionScale, int steps, float viewDistance)
+{
+    fogEnabled_ = true;
+    glDisable(GL_DEPTH_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, fogFrame_);
+    const float scale = std::min({resolutionScale, 960.0f / width_, 540.0f / height_});
+    const glm::ivec2 size{std::max(1, static_cast<int>(width_ * scale)),
+                          std::max(1, static_cast<int>(height_ * scale))};
+    if (size != fogSize_) {
+        fogSize_ = size;
+        glActiveTexture(GL_TEXTURE0);
+        allocateTexture(fogTexture_, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, size.x, size.y, GL_NEAREST);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fogTexture_, 0);
+        checkFramebuffer("Could not create camp fog framebuffer");
+    }
+    glViewport(0, 0, size.x, size.y);
+    glBindVertexArray(array_);
+    glUseProgram(fogProgram_);
+    glUniformMatrix4fv(fogClip_, 1, GL_FALSE, glm::value_ptr(clipToWorld));
+    glUniform3fv(fogEye_, 1, glm::value_ptr(eye));
+    fogShadows_.bind(shadows);
+    glUniform3fv(fogLightDirection_, 1, glm::value_ptr(lightDirection));
+    glUniform1f(fogGroundHeight_, groundHeight);
+    constexpr double tau = 6.283185307179586;
+    glUniform2f(fogPhase_, static_cast<float>(std::remainder(origin.x * 0.033 + origin.y * 0.050, tau)),
+                 static_cast<float>(std::remainder(origin.y * 0.094 - origin.x * 0.015, tau)));
+    glUniform1f(fogTime_, time);
+    glUniform1i(fogNight_, night);
+    glUniform1i(fogSteps_, steps);
+    glUniform1f(fogDistantDensity_, 0.0045f * 530.0f / viewDistance);
+    bindTexture(GL_TEXTURE0, depth_);
+    drawFullscreen();
 }
 
 void PostProcess::drawFullscreen() const
@@ -363,6 +551,8 @@ void PostProcess::present(const glm::vec3& sunScreen, float speedEffect, const g
     bindTexture(GL_TEXTURE0, scene_);
     bindTexture(GL_TEXTURE1, glow_[0]);
     bindTexture(GL_TEXTURE2, depth_);
+    bindTexture(GL_TEXTURE3, fogEnabled_ ? fogTexture_ : scene_);
+    glUniform1i(fogEnabledLocation_, fogEnabled_);
     glUniform3fv(sunScreen_, 1, glm::value_ptr(sunScreen));
     glUniform1f(aspect_, static_cast<float>(width_) / height_);
     glUniform1f(speedEffect_, speedEffect);
