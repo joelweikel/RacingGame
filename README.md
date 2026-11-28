@@ -4,6 +4,12 @@ A WIP multiplayer party racing game set in the MMORP universe. Planned targets a
 
 <img src="screenshots/slimrider.png" alt="SlimRider drifting and leaving tire smoke" width="49%"> <img src="screenshots/gale.png" alt="Gale driving in daylight" width="49%">
 
+## Garage
+
+Choose either car under **Play** to open its garage. Adjust the RGB sliders with the mouse or arrow keys and toggle the hood intake, splitter, rear wing, and turbo diesel swap. The intake adds 3% power. The splitter and wing increase grip at speed and add drag. Each car's setup is saved when you leave the garage.
+
+Hold the service brake and throttle to rev while parked. In Derelict Camp, aim a nearby exhaust outlet at the grass to see it bend. Gasoline cars spit flames on high-RPM shifts under throttle. Floor the diesel from low boost to roll coal, and watch the boost gauge as the turbo spools.
+
 ## Derelict Camp trees
 
 Select **Play → Derelict Camp** for the endless mountain road. It starts at night. **N** toggles daylight on the default keyboard layout.

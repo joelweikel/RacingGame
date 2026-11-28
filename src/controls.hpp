@@ -20,10 +20,16 @@ inline constexpr std::array<std::string_view, actionCount> actionLabels{
     "Toggle automatic", "Day / night", "Reset car", "Pause", "Look left", "Look right", "Look up", "Look down"
 };
 
+#ifndef __EMSCRIPTEN__
+std::filesystem::path preferencesPath(const char* filename, const char* fallback);
+#endif
+
 struct MenuInput {
     bool up = false, down = false, left = false, right = false;
     bool confirm = false, back = false, reset = false, click = false, mouseMoved = false;
     glm::vec2 cursor{0.0f};
+    int horizontalHeld = 0;
+    bool mouseHeld = false;
 };
 
 class Controls {

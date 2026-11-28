@@ -76,17 +76,19 @@ struct GameAudio::Playback {
     ma_device device{};
     bool open = false;
     std::atomic<float> targetRpm{idleRpm}, targetThrottle{0.0f}, targetSlip{0.0f}, targetSpeed{0.0f}, targetGain{0.0f};
-    std::atomic<bool> gale{false}, shifting{false};
+    std::atomic<float> targetTurbo{0.0f}, targetBoost{0.0f};
+    std::atomic<bool> gale{false}, shifting{false}, diesel{false}, afterfire{false};
 
     EngineSound engine;
     std::array<Loop, galeRecordings.size()> recordings;
-    Loop tires;
+    Loop tires, dieselRecording;
     bool hasRecordings = false;
     float rpm = idleRpm, load = 0.0f, cut = 1.0f, slip = 0.0f, speed = 0.0f, gain = 0.0f;
     float recordingBody = 0.0f, road = 0.0f, roadHigh = 0.0f;
+    float dieselBody = 0.0f, turbo = 0.0f, boost = 0.0f, turboPhase = 0.0f;
     std::array<float, 2> dc{};
     float lastThrottle = 0.0f;
-    bool lastShift = false;
+    bool lastAfterfire = false;
     int pops = 0, untilPop = 0;
     std::uint32_t noiseState = 591762u;
 
@@ -97,6 +99,7 @@ struct GameAudio::Playback {
             return !loop.waveform.empty();
         });
         tires.load(assets / "tire-squeal.wav");
+        dieselRecording.load(assets / "diesel-idle.wav");
 
         auto config = ma_device_config_init(ma_device_type_playback);
         config.playback.format = ma_format_f32;
@@ -145,17 +148,23 @@ struct GameAudio::Playback {
         const float velocity = targetSpeed.load(std::memory_order_relaxed);
         const float volume = targetGain.load(std::memory_order_relaxed);
         const bool flatPlane = gale.load(std::memory_order_relaxed);
+        const bool compressionIgnition = diesel.load(std::memory_order_relaxed);
         const bool shift = shifting.load(std::memory_order_relaxed);
+        const bool fire = afterfire.load(std::memory_order_relaxed);
+        const float shaft = targetTurbo.load(std::memory_order_relaxed);
+        const float pressure = targetBoost.load(std::memory_order_relaxed);
         engine.select(flatPlane ? CarModel::Gale : CarModel::SlimRider);
-        if (volume == 0.0f) {
+        if (volume == 0.0f || compressionIgnition) {
             pops = 0;
-        } else if (revs > 2900.0f && ((lastThrottle > 0.62f && throttle < 0.14f) ||
-                                     (shift && !lastShift && throttle > 0.55f))) {
-            pops = shift ? 1 : 2;
-            untilPop = shift ? 460 : 1080;
+        } else if (fire && !lastAfterfire) {
+            pops = 1;
+            untilPop = 220;
+        } else if (revs > 2900.0f && lastThrottle > 0.62f && throttle < 0.14f) {
+            pops = 2;
+            untilPop = 1080;
         }
         lastThrottle = throttle;
-        lastShift = shift;
+        lastAfterfire = fire;
 
         for (ma_uint32 frame = 0; frame < frames; ++frame) {
             rpm += (revs - rpm) * 0.00145f;
@@ -173,7 +182,21 @@ struct GameAudio::Playback {
                 untilPop = 2750 + static_cast<int>(720.0f * noise);
             }
             auto motor = engine.sample(rpm, load, cut, noise);
-            if (flatPlane && hasRecordings) {
+            if (compressionIgnition) {
+                const float recording = dieselRecording.sample(std::clamp(rpm / 1050.0f, 0.78f, 4.35f));
+                dieselBody += (recording - dieselBody) * mix(0.10f, 0.42f, load);
+                const float combustion = dieselRecording.waveform.empty() ? motor[0] * 0.8f :
+                    (dieselBody + (recording - dieselBody) * load * 0.65f) * (0.48f + load * 0.86f) * cut;
+                turbo += (shaft - turbo) * 0.0014f;
+                boost += (pressure - boost) * 0.0009f;
+                constexpr float tau = 6.28318531f;
+                turboPhase += tau * (280.0f + turbo * 2420.0f) / gameAudioRate;
+                if (turboPhase > tau) turboPhase -= tau;
+                const float whistle = (std::sin(turboPhase) + 0.16f * std::sin(2.0f * turboPhase)) *
+                                      turbo * turbo * (0.024f + 0.022f * boost);
+                const float rush = (roadHigh - road) * turbo * (0.045f * load + 0.025f * (1.0f - load));
+                motor = {combustion + whistle + rush, combustion + whistle * 0.92f + rush * 0.82f};
+            } else if (flatPlane && hasRecordings) {
                 const float recording = recordedExhaust();
                 recordingBody += (recording - recordingBody) * mix(0.072f, 0.48f, load);
                 const float recordingGain = smooth(1680.0f, 3100.0f, rpm) * mix(0.51f, 0.91f, load);
@@ -203,7 +226,7 @@ struct GameAudio::Playback {
 GameAudio::GameAudio(const std::filesystem::path& assets) : playback_(std::make_unique<Playback>(assets)) {}
 GameAudio::~GameAudio() = default;
 
-void GameAudio::update(CarModel model, const CarState& car, const DriveInput& input, bool driving)
+void GameAudio::update(CarModel model, const CarState& car, bool driving)
 {
     float skid = 0.0f, totalSlip = 0.0f;
     for (const auto& wheel : car.wheels) {
@@ -212,8 +235,12 @@ void GameAudio::update(CarModel model, const CarState& car, const DriveInput& in
     }
     const float speed = glm::length(car.velocity);
     const float motion = smooth(1.0f, 6.0f, speed);
-    const float load = driving && !input.serviceBrake ? std::abs(input.throttle) : 0.0f;
+    const float load = driving ? car.engineLoad : 0.0f;
     playback_->gale.store(model == CarModel::Gale, std::memory_order_relaxed);
+    playback_->diesel.store(car.setup.diesel, std::memory_order_relaxed);
+    playback_->afterfire.store(driving && car.afterfire > 0.0f, std::memory_order_relaxed);
+    playback_->targetTurbo.store(driving ? car.turboSpeed : 0.0f, std::memory_order_relaxed);
+    playback_->targetBoost.store(driving ? car.boost : 0.0f, std::memory_order_relaxed);
     playback_->targetRpm.store(std::max(car.rpm, idleRpm), std::memory_order_relaxed);
     playback_->targetThrottle.store(load, std::memory_order_relaxed);
     playback_->targetSlip.store(driving ? (skid * 0.76f + totalSlip * 0.06f) * motion : 0.0f, std::memory_order_relaxed);

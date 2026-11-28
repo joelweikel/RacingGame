@@ -19,8 +19,6 @@ struct ChaseCamera {
     void updateSpeed(float metersPerSecond, float dt);
 };
 
-enum class Course { TestGrid, DustlineOval, DerelictCamp };
-
 struct SceneView {
     Course course = Course::TestGrid;
     bool menu = false;
@@ -59,6 +57,7 @@ private:
         void drawInstances(GLuint buffer, GLsizei count) const;
         const Surface& surface() const { return surface_; }
         bool mirrorAcrossBody() const { return mirrorAcrossBody_; }
+        CarPart carPart() const { return carPart_; }
         GLuint texture() const { return texture_; }
         float alphaCutoff() const { return alphaCutoff_; }
         float alphaFactor() const { return alphaFactor_; }
@@ -71,12 +70,13 @@ private:
         GLsizei indexCount_ = 0;
         Surface surface_;
         bool mirrorAcrossBody_ = false;
+        CarPart carPart_ = CarPart::Always;
         float alphaCutoff_ = -1.0f;
         float alphaFactor_ = 1.0f;
     };
 
     void draw(const MeshBuffer& mesh, const glm::mat4& model, bool night, bool braking,
-              GLuint instances = 0, GLsizei count = 0) const;
+              GLuint instances = 0, GLsizei count = 0, const glm::vec3* paint = nullptr) const;
 
     std::vector<MeshBuffer> body_;
     std::vector<MeshBuffer> wheel_;
@@ -95,6 +95,8 @@ private:
     GLint alphaMask_ = -1;
     GLint viewProjection_ = -1;
     GLint color_ = -1;
+    GLint paint_ = -1;
+    GLint groundHeight_ = -1;
     GLint surface_ = -1;
     GLint emissive_ = -1;
     GLint lensTint_ = -1;
@@ -102,6 +104,7 @@ private:
     GLint groundPass_ = -1;
     GLint campGround_ = -1;
     GLint course_ = -1;
+    GLint ovalDimensions_ = -1;
     GLint menuLight_ = -1;
     GLint night_ = -1;
     GLint sunDirection_ = -1;

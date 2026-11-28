@@ -16,6 +16,17 @@ struct Vertex {
 };
 
 enum class LightControl { Always, Night, Brake };
+enum class CarPart { Always, HoodIntake, Wing, Splitter, Gasoline, Diesel };
+
+struct CarSetup {
+    glm::ivec3 paint{-1}; // -1 uses the authored color. Custom channels use sRGB bytes.
+    bool hoodIntake = false;
+    bool wing = false;
+    bool splitter = false;
+    bool diesel = false;
+
+    bool shows(CarPart part) const;
+};
 
 struct Surface {
     glm::vec3 color{0.5f};
@@ -26,6 +37,7 @@ struct Surface {
     float opacity = 1.0f;
     float lensTint = 0.28f;
     LightControl lightControl = LightControl::Always;
+    bool paint = false;
 };
 
 struct MeshPart {
@@ -33,6 +45,7 @@ struct MeshPart {
     std::vector<std::uint32_t> indices;
     Surface surface;
     bool mirrorAcrossBody = false;
+    CarPart carPart = CarPart::Always;
     struct Image {
         int width = 0;
         int height = 0;
@@ -69,6 +82,12 @@ struct CarAsset {
     std::vector<MeshPart> body;
     std::vector<MeshPart> wheel;
     glm::mat4 wheelTransform{1.0f};
+    struct Exhaust {
+        glm::vec3 position;
+        glm::vec3 direction;
+    };
+    std::vector<Exhaust> gasolineExhaust;
+    std::vector<Exhaust> dieselExhaust;
     // Front left, front right, rear left, rear right.
     std::array<glm::vec3, 4> hubs{};
     float wheelRadius = 0.0f;
@@ -78,5 +97,7 @@ struct CarAsset {
 };
 
 const CarSpec& carSpec(CarModel model);
+const CarSpec& powertrainSpec(CarModel model, bool diesel);
 CarAsset loadCar(const std::filesystem::path& path, CarModel model = CarModel::SlimRider);
+CarAsset loadGameCar(const std::filesystem::path& assets, CarModel model);
 std::vector<MeshPart> loadScenery(const std::filesystem::path& path);

@@ -18,6 +18,25 @@ EM_JS(void, writeControlPreferences, (const char* data), {
 });
 #endif
 
+#ifndef __EMSCRIPTEN__
+std::filesystem::path preferencesPath(const char* filename, const char* fallback)
+{
+#ifdef _WIN32
+    if (const wchar_t* base = _wgetenv(L"LOCALAPPDATA")) {
+        return std::filesystem::path(base) / "RacingGame" / filename;
+    }
+#else
+    if (const char* base = std::getenv("XDG_CONFIG_HOME")) {
+        return std::filesystem::path(base) / "RacingGame" / filename;
+    }
+    if (const char* base = std::getenv("HOME")) {
+        return std::filesystem::path(base) / ".config" / "RacingGame" / filename;
+    }
+#endif
+    return fallback;
+}
+#endif
+
 namespace {
 
 constexpr int axisBase = 32;
@@ -35,25 +54,6 @@ constexpr std::array<int, actionCount> defaultPad{
     axis(GLFW_GAMEPAD_AXIS_RIGHT_X, false), axis(GLFW_GAMEPAD_AXIS_RIGHT_X, true),
     axis(GLFW_GAMEPAD_AXIS_RIGHT_Y, false), axis(GLFW_GAMEPAD_AXIS_RIGHT_Y, true)
 };
-
-#ifndef __EMSCRIPTEN__
-std::filesystem::path bindingsPath()
-{
-#ifdef _WIN32
-    if (const wchar_t* base = _wgetenv(L"LOCALAPPDATA")) {
-        return std::filesystem::path(base) / "RacingGame" / "controls.cfg";
-    }
-#else
-    if (const char* base = std::getenv("XDG_CONFIG_HOME")) {
-        return std::filesystem::path(base) / "RacingGame" / "controls.cfg";
-    }
-    if (const char* base = std::getenv("HOME")) {
-        return std::filesystem::path(base) / ".config" / "RacingGame" / "controls.cfg";
-    }
-#endif
-    return "racing-controls.cfg";
-}
-#endif
 
 bool down(GLFWwindow* window, int key) { return glfwGetKey(window, key) == GLFW_PRESS; }
 int index(Action action) { return static_cast<int>(action); }
@@ -101,7 +101,7 @@ void Controls::load()
     readControlPreferences(data, sizeof(data));
     std::istringstream stream(data);
 #else
-    std::ifstream stream(bindingsPath());
+    std::ifstream stream(preferencesPath("controls.cfg", "racing-controls.cfg"));
 #endif
     auto keys = keyboard_;
     auto pad = gamepad_;
@@ -123,7 +123,7 @@ void Controls::save() const
 #ifdef __EMSCRIPTEN__
     writeControlPreferences(values.str().c_str());
 #else
-    const auto path = bindingsPath();
+    const auto path = preferencesPath("controls.cfg", "racing-controls.cfg");
     std::error_code error;
     if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), error);
     std::ofstream file(path);
@@ -207,6 +207,8 @@ void Controls::poll()
              held.confirm && !previousMenu_.confirm, held.back && !previousMenu_.back,
              held.reset && !previousMenu_.reset, held.click && !previousMenu_.click,
              held.mouseMoved, held.cursor};
+    menu_.horizontalHeld = static_cast<int>(held.right) - static_cast<int>(held.left);
+    menu_.mouseHeld = held.click;
     previousMenu_ = held;
 }
 

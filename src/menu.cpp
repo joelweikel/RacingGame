@@ -4,8 +4,21 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+
+EM_JS(void, readGaragePreferences, (char* out, int capacity), {
+    try { stringToUTF8(localStorage.getItem("racinggame.garage.v1") || "", out, capacity); } catch (_) {}
+});
+EM_JS(void, writeGaragePreferences, (const char* data), {
+    try { localStorage.setItem("racinggame.garage.v1", UTF8ToString(data)); } catch (_) {}
+});
+#endif
 
 namespace {
 
@@ -28,6 +41,12 @@ constexpr UiBox defaultsButton{72, 626, 169, 38};
 constexpr UiBox goButton{842, 560, 358, 70};
 constexpr std::array courses{Course::TestGrid, Course::DustlineOval, Course::DerelictCamp};
 constexpr UiBox startButton{72, 488, 340, 72};
+constexpr int garageContinue = 7;
+constexpr std::array garageLabels{"Red", "Green", "Blue", "Hood intake", "Splitter", "Rear wing", "Engine"};
+constexpr std::array garageParts{CarPart::HoodIntake, CarPart::Splitter, CarPart::Wing, CarPart::Diesel};
+constexpr std::array garageToggles{&CarSetup::hoodIntake, &CarSetup::splitter, &CarSetup::wing, &CarSetup::diesel};
+
+UiBox paintSlider(UiBox row) { return {row.x + 126, row.y + 12, 234, 17}; }
 
 enum class Icon { Play, Players, Controls, Car, Map, Oval, Restart, Exit };
 
@@ -392,13 +411,49 @@ std::string_view courseName(Course course)
     }
 }
 
-Menu::Menu(CarModel initialModel, bool hasGale) : selectedCar_(initialModel), hasGale_(hasGale) {}
+Menu::Menu(CarModel initialModel, bool hasGale) : selectedCar_(initialModel), hasGale_(hasGale)
+{
+#ifdef __EMSCRIPTEN__
+    char data[128]{};
+    readGaragePreferences(data, sizeof(data));
+    std::istringstream file(data);
+#else
+    std::ifstream file(preferencesPath("garage.cfg", "racing-garage.cfg"));
+#endif
+    for (auto& config : setups_) {
+        CarSetup loaded;
+        if (!(file >> loaded.paint.r >> loaded.paint.g >> loaded.paint.b >>
+              loaded.hoodIntake >> loaded.wing >> loaded.splitter >> loaded.diesel)) return;
+        if (loaded.paint == glm::ivec3(-1) ||
+            (glm::all(glm::greaterThanEqual(loaded.paint, glm::ivec3(0))) &&
+             glm::all(glm::lessThanEqual(loaded.paint, glm::ivec3(255))))) config = loaded;
+    }
+}
+
+void Menu::saveGarage() const
+{
+    std::ostringstream values;
+    for (const auto& config : setups_) {
+        values << config.paint.r << ' ' << config.paint.g << ' ' << config.paint.b << ' ' <<
+                  config.hoodIntake << ' ' << config.wing << ' ' << config.splitter << ' ' << config.diesel << '\n';
+    }
+#ifdef __EMSCRIPTEN__
+    writeGaragePreferences(values.str().c_str());
+#else
+    const auto path = preferencesPath("garage.cfg", "racing-garage.cfg");
+    std::error_code error;
+    if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), error);
+    std::ofstream file(path);
+    file << values.str();
+#endif
+}
 
 int Menu::count() const
 {
     switch (screen_) {
     case Screen::Main: return 3;
     case Screen::Cars: return hasGale_ ? 2 : 1;
+    case Screen::Garage: return garageContinue + 1;
     case Screen::Maps: return static_cast<int>(courses.size());
     case Screen::Settings: return actionCount;
     case Screen::Pause: return 4;
@@ -413,6 +468,8 @@ UiBox Menu::option(int index) const
     switch (screen_) {
     case Screen::Main: return {72, 352.0f + index * 89.0f, 456, 73};
     case Screen::Cars: return {72, 223.0f + index * 97.0f, 456, 73};
+    case Screen::Garage:
+        return index == garageContinue ? UiBox{72, 568, 456, 63} : UiBox{82, 210.0f + index * 47.0f, 436, 41};
     case Screen::Maps: return {72, 201.0f + index * 82.0f, 456, 73};
     case Screen::Settings: return {82, 226.0f + (index - firstBinding()) * 46.0f, 414, 39};
     case Screen::Pause: return {424, 232.0f + index * 74.0f, 432, 60};
@@ -422,11 +479,15 @@ UiBox Menu::option(int index) const
 
 void Menu::open(Screen next)
 {
+    if (screen_ == Screen::Garage && next != Screen::Garage) saveGarage();
     screen_ = pending_ = next;
     entered_ = time_;
     capture_ = -1;
     focus_ = next == Screen::Cars && hasGale_ ? (selectedCar_ == CarModel::Gale ? 0 : 1) :
-             next == Screen::Maps ? static_cast<int>(std::find(courses.begin(), courses.end(), course_) - courses.begin()) : 0;
+             next == Screen::Maps ? static_cast<int>(std::find(courses.begin(), courses.end(), course_) - courses.begin()) :
+             next == Screen::Garage ? garageContinue : 0;
+    dragPaint_ = -1;
+    paintRepeat_ = 0.0f;
 }
 
 void Menu::transition(Screen next, glm::vec2 origin)
@@ -479,7 +540,8 @@ void Menu::update(Controls& controls, glm::vec2 cursor, float dt)
         switch (screen_) {
         case Screen::Settings: open(settingsReturn_); break;
         case Screen::Cars: open(Screen::Main); break;
-        case Screen::Maps: open(Screen::Cars); break;
+        case Screen::Garage: open(Screen::Cars); break;
+        case Screen::Maps: open(Screen::Garage); break;
         case Screen::Pause: open(Screen::Drive); break;
         case Screen::Main: open(Screen::Splash); break;
         default: break;
@@ -498,8 +560,9 @@ void Menu::update(Controls& controls, glm::vec2 cursor, float dt)
         }
     }
     const int size = count();
-    const int move = static_cast<int>(input.down || (screen_ != Screen::Settings && input.right)) -
-                     static_cast<int>(input.up || (screen_ != Screen::Settings && input.left));
+    const bool sidewaysNavigation = screen_ != Screen::Settings && screen_ != Screen::Garage;
+    const int move = static_cast<int>(input.down || (sidewaysNavigation && input.right)) -
+                     static_cast<int>(input.up || (sidewaysNavigation && input.left));
     if (move != 0 && size > 0) focus_ = (focus_ + move + size) % size;
 
     bool activated = input.confirm;
@@ -519,6 +582,7 @@ void Menu::update(Controls& controls, glm::vec2 cursor, float dt)
         course_ = courses[focus_];
         if (input.click && goButton.contains(cursor)) activated = true;
     }
+    if (screen_ == Screen::Garage && updateGarage(input, cursor, dt, activated)) return;
     if (!activated) return;
 
     switch (screen_) {
@@ -526,7 +590,8 @@ void Menu::update(Controls& controls, glm::vec2 cursor, float dt)
         if (focus_ == 0) transition(Screen::Cars, option(0).center());
         if (focus_ == 2) { settingsReturn_ = Screen::Main; open(Screen::Settings); }
         break;
-    case Screen::Cars: open(Screen::Maps); break;
+    case Screen::Cars: open(Screen::Garage); break;
+    case Screen::Garage: open(Screen::Maps); break;
     case Screen::Maps: transition(Screen::Drive, goButton.center()); break;
     case Screen::Settings: capture_ = focus_; cancelHeld_ = 0.0f; break;
     case Screen::Pause:
@@ -537,6 +602,98 @@ void Menu::update(Controls& controls, glm::vec2 cursor, float dt)
         break;
     default: break;
     }
+}
+
+void Menu::setGarageAsset(const CarAsset& asset)
+{
+    auto& config = setups_[static_cast<std::size_t>(asset.model)];
+    const auto paint = std::find_if(asset.body.begin(), asset.body.end(), [](const MeshPart& part) {
+        return part.surface.paint;
+    });
+    if (paint != asset.body.end()) {
+        const auto linear = glm::clamp(paint->surface.color, 0.0f, 1.0f);
+        const auto srgb = glm::mix(linear * 12.92f, 1.055f * glm::pow(linear, glm::vec3(1.0f / 2.4f)) - 0.055f,
+                                   glm::greaterThan(linear, glm::vec3(0.0031308f)));
+        stockPaint_ = glm::ivec3(glm::round(srgb * 255.0f));
+    }
+    for (std::size_t i = 0; i < garageParts.size(); ++i) {
+        garageParts_[i] = std::any_of(asset.body.begin(), asset.body.end(), [&](const MeshPart& part) {
+            return part.carPart == garageParts[i];
+        });
+        if (!garageParts_[i]) config.*garageToggles[i] = false;
+    }
+}
+
+bool Menu::updateGarage(const MenuInput& input, glm::vec2 cursor, float dt, bool activated)
+{
+    auto& setup = setups_[static_cast<std::size_t>(selectedCar_)];
+    if (input.reset) setup.paint = glm::ivec3(-1);
+    if (!input.mouseHeld) dragPaint_ = -1;
+    if (input.click && focus_ < 3 && paintSlider(option(focus_)).contains(cursor)) dragPaint_ = focus_;
+    if (dragPaint_ >= 0) {
+        if (setup.paint.x < 0) setup.paint = stockPaint_;
+        const auto slider = paintSlider(option(dragPaint_));
+        setup.paint[dragPaint_] = static_cast<int>(std::lround(255.0f * std::clamp((cursor.x - slider.x) / slider.w, 0.0f, 1.0f)));
+        return true;
+    }
+    if (focus_ < 3) {
+        if (!input.horizontalHeld) paintRepeat_ = 0.0f;
+        else paintRepeat_ -= dt;
+        if (input.left || input.right || (input.horizontalHeld && paintRepeat_ <= 0.0f)) {
+            if (setup.paint.x < 0) setup.paint = stockPaint_;
+            setup.paint[focus_] = std::clamp(setup.paint[focus_] + input.horizontalHeld, 0, 255);
+            paintRepeat_ = input.left || input.right ? 0.32f : 0.018f;
+        }
+    } else if (focus_ < garageContinue && (activated || input.left || input.right) && garageParts_[focus_ - 3]) {
+        auto& enabled = setup.*garageToggles[focus_ - 3];
+        enabled = input.right || (!input.left && !enabled);
+    }
+    return focus_ != garageContinue;
+}
+
+void Menu::drawGarage(UiDraw& ui, bool pad) const
+{
+    const auto& config = setup(selectedCar_);
+    const auto paint = config.paint.x < 0 ? stockPaint_ : config.paint;
+    const auto& spec = powertrainSpec(selectedCar_, config.diesel);
+    ui.text("Garage", {69, 113}, 75, ink, italic);
+    panel(ui, {72, 199, 456, 347});
+    for (int i = 0; i < garageContinue; ++i) {
+        const UiBox row = option(i);
+        const bool selected = i == focus_;
+        ui.roundedGradient(row, 7, selected ? deepBlue : dark, ink);
+        ui.text(garageLabels[i], {row.x + 12, row.y + 8}, 22, selected ? white : muted);
+        if (i < 3) {
+            const auto slider = paintSlider(row);
+            glm::vec4 lo(glm::vec3(paint) / 255.0f, 1.0f);
+            auto hi = lo;
+            lo[i] = 0.0f;
+            hi[i] = 1.0f;
+            for (int step = 0; step < 39; ++step) {
+                ui.rect({slider.x + step * 6.0f, slider.y, 6.0f, slider.h}, glm::mix(lo, hi, step / 38.0f));
+            }
+            const float x = slider.x + slider.w * paint[i] / 255.0f;
+            ui.rect({x - 2, slider.y - 3, 4, slider.h + 6}, white);
+            ui.text(std::to_string(paint[i]), {row.x + 379, row.y + 9}, 20, white);
+        } else {
+            const bool enabled = config.*garageToggles[i - 3];
+            const char* value = !garageParts_[i - 3] ? "Unavailable" :
+                                i == 6 ? (enabled ? "Turbo diesel" : "Gasoline") :
+                                enabled ? (i == 3 ? "+3% power" : "Equipped") : "Off";
+            ui.text(value, {row.x + row.w - 14 - ui.measure(value, 20), row.y + 9}, 20,
+                    enabled ? pale : muted);
+        }
+    }
+    button(ui, option(garageContinue), "Choose a map", focus_ == garageContinue, time_, Icon::Map);
+    panel(ui, {829, 555, 371, 75});
+    ui.rounded({846, 576, 34, 34}, 6, glm::vec4(glm::vec3(paint) / 255.0f, 1.0f));
+    ui.text(spec.name, {893, 569}, 36, white, italic);
+    const int hp = static_cast<int>(std::lround(horsepower(spec) * (config.hoodIntake ? 1.03f : 1.0f)));
+    const auto power = std::to_string(hp) + " hp";
+    ui.text(power, {1181 - ui.measure(power, 25, italic), 582}, 25, pale, italic);
+    keyHint(ui, {72, 662}, pad ? "D-pad / Stick" : "Arrow keys", "Adjust");
+    keyHint(ui, {272, 662}, pad ? "A" : "Enter", "Select");
+    keyHint(ui, {403, 662}, pad ? "X" : "Delete", "Reset paint");
 }
 
 SceneView Menu::scene(const UiDraw& ui, int width, int height) const
@@ -628,6 +785,8 @@ void Menu::draw(UiDraw& ui, const Controls& controls) const
             ui.text(labels[i], {x, 557}, 15, muted);
             ui.text(values[i], {x, 578}, 31, white, italic);
         }
+    } else if (screen_ == Screen::Garage) {
+        drawGarage(ui, pad);
     } else if (screen_ == Screen::Maps) {
         ui.text("Choose a map", {69, 116}, 75, ink, italic);
         button(ui, option(0), courseName(Course::TestGrid), focus_ == 0, time_, Icon::Map, "Open practice surface");

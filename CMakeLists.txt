@@ -45,6 +45,7 @@ set(ui_assets
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/Spectral-OFL.txt")
 set(audio_credits "${CMAKE_CURRENT_SOURCE_DIR}/assets/audio-credits.txt")
 set(audio_assets
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/diesel-idle.wav"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-2977.wav"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-4438.wav"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-6040.wav"

@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include <glm/gtc/matrix_transform.hpp>
+
 namespace {
 
 constexpr glm::vec3 up{0.0f, 1.0f, 0.0f};
@@ -19,10 +21,10 @@ float approach(float current, float target, float change)
     return current + std::clamp(target - current, -change, change);
 }
 
-float ratioFor(int gear)
+float ratioFor(int gear, bool diesel)
 {
     const float ratio = gear < 0 ? -2.90f : gearRatios[gear - 1];
-    return ratio * finalDrive;
+    return ratio * (diesel ? 2.74f : finalDrive);
 }
 
 float engineTorque(float rpm, const std::array<TorquePoint, 6>& torqueCurve)
@@ -43,29 +45,52 @@ void selectGear(CarState& car, int gear)
     if (gear != car.gear) {
         car.gear = gear;
         car.shiftTime = 0.18f;
+        car.shiftFirePending = gear > 1 && car.rpm > 3300.0f;
     }
 }
 
-float updatePowertrain(CarState& car, const CarSpec& spec, float throttle, float speed, bool handbrake, float dt)
+float updatePowertrain(CarState& car, const CarSpec& spec, float throttle, float pedal, float speed,
+                       bool revving, bool handbrake, float dt)
 {
     car.shiftTime = std::max(0.0f, car.shiftTime - dt);
     const float frontSpeed = (car.wheels[0].angularSpeed + car.wheels[1].angularSpeed) * 0.5f;
     const float rearSpeed = (car.wheels[2].angularSpeed + car.wheels[3].angularSpeed) * 0.5f;
     const float drivenSpeed = handbrake && spec.rearDriveFraction < 1.0f
         ? frontSpeed : frontSpeed * (1.0f - spec.rearDriveFraction) + rearSpeed * spec.rearDriveFraction;
-    const float drivenRpm = std::abs(drivenSpeed * ratioFor(car.gear)) * rpmPerRadian;
+    const bool diesel = car.setup.diesel;
+    const float drivenRpm = std::abs(drivenSpeed * ratioFor(car.gear, diesel)) * rpmPerRadian;
     const float redlineRpm = spec.torqueCurve.back().rpm;
     const float launchClutch = std::clamp(1.0f - std::abs(speed) / 7.0f, 0.0f, 1.0f);
-    const float launchRpm = idleRpm + throttle * launchClutch * 1700.0f;
+    const float launchRpm = revving ? idleRpm + pedal * (redlineRpm - idleRpm) * 0.96f
+                                   : idleRpm + throttle * launchClutch * 1700.0f;
     const float targetRpm = std::clamp(std::max(launchRpm, drivenRpm), idleRpm, redlineRpm);
     car.rpm += (targetRpm - car.rpm) * (1.0f - std::exp(-12.0f * dt));
 
-    if (car.automatic && car.gear > 0 && car.shiftTime == 0.0f && !handbrake) {
+    if (car.automatic && car.gear > 0 && car.shiftTime == 0.0f && !handbrake && !revving) {
         if (car.rpm >= spec.upshiftRpm && speed > 10.0f && car.gear < highestGear) {
             selectGear(car, car.gear + 1);
         } else if (car.rpm < spec.downshiftRpm && car.gear > 1) {
             selectGear(car, car.gear - 1);
         }
+    }
+    car.engineLoad = pedal;
+    car.afterfire = std::max(0.0f, car.afterfire - dt);
+    if (car.shiftFirePending) {
+        if (!diesel && throttle > 0.48f) car.afterfire = 0.115f;
+        car.shiftFirePending = false;
+    }
+    if (diesel) {
+        // Turbine work follows exhaust flow. Bearing/compressor losses let it coast down.
+        const float fuel = pedal * (car.shiftTime > 0.0f ? 0.08f : (revving ? 0.61f : 1.0f));
+        const float flow = std::clamp((car.rpm - idleRpm) / 1950.0f, 0.0f, 1.2f);
+        const float turbineWork = fuel * (0.22f + 2.9f * flow);
+        const float losses = car.turboSpeed * (0.62f + 1.95f * car.turboSpeed);
+        car.turboSpeed = std::clamp(car.turboSpeed + (turbineWork - losses) * dt, 0.0f, 1.05f);
+        const float compressorPressure = 2.1f * car.turboSpeed * car.turboSpeed;
+        const float pressure = compressorPressure * (0.26f + 0.74f * fuel);
+        car.boost += (pressure - car.boost) * (1.0f - std::exp(-8.0f * dt));
+        const float excessFuel = std::max(0.0f, fuel - (0.40f + 0.29f * car.boost));
+        car.soot = glm::smoothstep(0.03f, 0.57f, excessFuel) * (0.68f + 0.32f * std::min(flow, 1.0f));
     }
     if (car.shiftTime > 0.0f || handbrake) {
         return 0.0f;
@@ -73,8 +98,10 @@ float updatePowertrain(CarState& car, const CarSpec& spec, float throttle, float
 
     const float limiter = std::clamp((redlineRpm + 120.0f - drivenRpm) / 420.0f, 0.0f, 1.0f);
     const float engineBraking = std::clamp((drivenRpm - 1300.0f) * 0.017f, 0.0f, 80.0f);
-    const float ratio = ratioFor(car.gear);
-    const float thrust = throttle * engineTorque(car.rpm, spec.torqueCurve) * limiter * ratio;
+    const float ratio = ratioFor(car.gear, diesel);
+    const float charge = diesel ? 0.48f + 0.52f * std::clamp(car.boost / 1.65f, 0.0f, 1.0f) : 1.0f;
+    const float intake = car.setup.hoodIntake ? 1.03f : 1.0f;
+    const float thrust = throttle * engineTorque(car.rpm, spec.torqueCurve) * limiter * ratio * charge * intake;
     const float drag = (1.0f - throttle) * std::copysign(engineBraking * std::abs(ratio), drivenSpeed);
     return (thrust - drag) * 0.90f;
 }
@@ -213,9 +240,31 @@ void placeOnCampSurface(CarState& car, const CarAsset& asset, const CampWorld& c
     }
 }
 
-void drive(CarState& car, const CarAsset& asset, const DriveInput& input, float dt, const CampWorld* camp)
+glm::mat4 vehicleTransform(const CarAsset& asset, const CarState& car, bool camp)
 {
-    const CarSpec& spec = carSpec(asset.model);
+    const auto base = glm::translate(glm::mat4(1.0f), car.position);
+    if (camp) return glm::translate(base * glm::mat4(campGroundFrame(car)), -up * asset.groundHeight);
+    return glm::rotate(base, car.heading, up);
+}
+
+glm::mat4 bodyTransform(const CarAsset& asset, const CarState& car, const glm::mat4& base)
+{
+    const float pivot = asset.groundHeight + carSpec(asset.model).centerOfGravityHeight;
+    auto model = glm::translate(base, up * (pivot + car.suspension.heave));
+    model = glm::rotate(model, car.suspension.pitch, glm::vec3(0, 0, 1));
+    model = glm::rotate(model, car.suspension.roll, glm::vec3(1, 0, 0));
+    return glm::translate(model, -up * pivot);
+}
+
+CarAsset::Exhaust transformExhaust(const CarAsset::Exhaust& outlet, const glm::mat4& body)
+{
+    return {glm::vec3(body * glm::vec4(outlet.position, 1.0f)),
+            glm::normalize(glm::mat3(body) * outlet.direction)};
+}
+
+void drive(CarState& car, const CarAsset& asset, const DriveInput& input, float dt, const CampWorld* camp, Course course)
+{
+    const CarSpec& spec = powertrainSpec(asset.model, car.setup.diesel);
     const glm::vec3 direction = forward(car.heading);
     const glm::vec3 side = glm::cross(direction, up);
     const float forwardSpeed = glm::dot(car.velocity, direction);
@@ -241,7 +290,11 @@ void drive(CarState& car, const CarAsset& asset, const DriveInput& input, float 
           std::clamp((10.0f - speed) / 4.0f, 0.0f, 1.0f)
         : 0.0f;
     // Bound cornering demand at speed and give the driver more steering toward the travel direction.
-    const float turnLimit = std::atan2(wheelbase * 9.0f, speed * speed);
+    const float airflowSquared = forwardSpeed * forwardSpeed;
+    const float frontDownforce = car.setup.splitter ? 0.42f * airflowSquared : 0.0f;
+    const float rearDownforce = car.setup.wing ? 0.69f * airflowSquared : 0.0f;
+    const float aeroGrip = (frontDownforce + rearDownforce) / spec.mass;
+    const float turnLimit = std::atan2(wheelbase * (9.0f + aeroGrip), speed * speed);
     const float rearSideSpeed = glm::dot(car.velocity, side) - car.yawRate * asset.hubs[2].x;
     const float rearTravelAngle = std::atan2(-rearSideSpeed * std::copysign(1.0f, forwardSpeed),
                                             std::abs(forwardSpeed));
@@ -264,15 +317,18 @@ void drive(CarState& car, const CarAsset& asset, const DriveInput& input, float 
         : 0.0f;
     const float tractionSlip = throttle > 0.0f ? 0.10f + 0.18f * driftAllowance : 0.0f;
     const float donutSlipSpeed = 12.0f * donut;
-    const float driveTorque = updatePowertrain(car, spec, throttle, forwardSpeed, input.handbrake, dt);
+    const bool revving = speed < 2.0f && (input.serviceBrake || input.handbrake);
+    const float pedal = revving ? std::max(0.0f, input.throttle) : throttle;
+    const float driveTorque = updatePowertrain(car, spec, throttle, pedal, forwardSpeed, revving, input.handbrake, dt);
 
     const float weight = spec.mass * gravity;
     const float frontStaticLoad = -asset.hubs[2].x / wheelbase * weight;
     const float nominalLoad = weight * 0.25f;
 
     glm::vec3 tireForces(0.0f);
-    float verticalForce = -weight;
-    float pitchTorque = 0.0f;
+    const glm::mat3 ground = camp ? campGroundFrame(car) : glm::mat3(direction, up, side);
+    float verticalForce = -weight - frontDownforce - rearDownforce;
+    float pitchTorque = -asset.hubs[0].x * frontDownforce - asset.hubs[2].x * rearDownforce;
     float rollTorque = 0.0f;
     float yawTorque = -car.yawRate * 70.0f;
     for (std::size_t i = 0; i < car.wheels.size(); ++i) {
@@ -280,7 +336,8 @@ void drive(CarState& car, const CarAsset& asset, const DriveInput& input, float 
         const glm::vec3& hub = asset.hubs[i];
         const glm::vec3 offset = direction * hub.x + side * hub.z;
         const glm::vec3 contactVelocity = car.velocity + glm::cross(up * car.yawRate, offset);
-        const float surfaceGrip = camp ? camp->surface(car.position + offset).grip : 1.0f;
+        const auto patch = ground * glm::vec3(hub.x, car.wheels[i].groundTravel, hub.z);
+        const float surfaceGrip = groundGrip(groundContact(course, camp, car.position + patch, asset.groundHeight).surface);
         const glm::vec3 wheelDirection = rear ? direction : forward(car.heading + frontWheelSteering(asset, i, car.steering));
         const float staticLoad = (rear ? weight - frontStaticLoad : frontStaticLoad) * 0.5f;
         const float load = springLoad(car.suspension, hub, staticLoad, rear);
@@ -309,7 +366,8 @@ void drive(CarState& car, const CarAsset& asset, const DriveInput& input, float 
     body.pitch += body.pitchRate * dt;
     body.roll += body.rollRate * dt;
 
-    const glm::vec3 drag = car.velocity * (14.0f + 0.44f * speed);
+    const float aeroDrag = 0.44f + (car.setup.wing ? 0.16f : 0.0f) + (car.setup.splitter ? 0.085f : 0.0f);
+    const glm::vec3 drag = car.velocity * (14.0f + aeroDrag * speed);
     glm::vec3 acceleration = (tireForces - drag) / spec.mass;
     if (camp) {
         const glm::vec3 slope = direction * car.groundSlope.x + side * car.groundSlope.y;

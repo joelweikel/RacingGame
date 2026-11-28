@@ -1,8 +1,7 @@
 #pragma once
 
 #include "car.hpp"
-
-class CampWorld;
+#include "course.hpp"
 
 inline constexpr int highestGear = 6;
 inline constexpr float idleRpm = 850.0f;
@@ -46,11 +45,22 @@ struct CarState {
     bool brakeLights = false;
     float rpm = idleRpm;
     float shiftTime = 0.0f;
+    CarSetup setup;
+    float engineLoad = 0.0f;
+    float turboSpeed = 0.0f;
+    float boost = 0.0f; // Gauge pressure in bar.
+    float soot = 0.0f;
+    float afterfire = 0.0f;
+    bool shiftFirePending = false;
 };
 
-void drive(CarState& car, const CarAsset& asset, const DriveInput& input, float dt, const CampWorld* camp = nullptr);
+void drive(CarState& car, const CarAsset& asset, const DriveInput& input, float dt, const CampWorld* camp = nullptr,
+           Course course = Course::TestGrid);
 void placeOnCampSurface(CarState& car, const CarAsset& asset, const CampWorld& camp);
 glm::mat3 campGroundFrame(const CarState& car);
+glm::mat4 bodyTransform(const CarAsset& asset, const CarState& car, const glm::mat4& base);
+glm::mat4 vehicleTransform(const CarAsset& asset, const CarState& car, bool camp);
+CarAsset::Exhaust transformExhaust(const CarAsset::Exhaust& outlet, const glm::mat4& body);
 void shiftGear(CarState& car, int direction);
 glm::vec3 forward(float heading);
 float frontWheelSteering(const CarAsset& asset, std::size_t wheel, float steering);

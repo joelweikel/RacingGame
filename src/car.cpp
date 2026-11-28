@@ -96,6 +96,12 @@ const cgltf_node& meshNode(const cgltf_data& data, std::string_view name)
     throw std::runtime_error("Missing mesh node: " + std::string(name));
 }
 
+const cgltf_node* galeWheelNode(const cgltf_data& data)
+{
+    if (const auto* assembly = namedNode(data, "GaleWheel", false)) return assembly;
+    return namedNode(data, "GaleWheel", true);
+}
+
 glm::mat4 nodeTransform(const cgltf_node& node)
 {
     cgltf_float values[16];
@@ -157,7 +163,9 @@ Surface readSurface(const cgltf_material* material, const glm::vec3& fallbackCol
     std::transform(name.begin(), name.end(), name.begin(),
                    [](unsigned char letter) { return static_cast<char>(std::tolower(letter)); });
     if (name == "paint" || name == "painty") {
+        surface.paint = true;
         surface.roughness = 0.21f;
+        surface.metallic = 0.28f;
         surface.clearcoat = 1.0f;
     } else if (name == "black") {
         surface.color = glm::vec3(0.006f, 0.008f, 0.010f);
@@ -189,6 +197,9 @@ Surface readSurface(const cgltf_material* material, const glm::vec3& fallbackCol
         surface.color = glm::vec3(0.25f, 0.28f, 0.32f);
         surface.metallic = 1.0f;
         surface.roughness = 0.45f;
+    } else if (name == "tire" || name == "matteblack") {
+        surface.metallic = 0.0f;
+        surface.roughness = 0.82f;
     }
     return surface;
 }
@@ -311,19 +322,18 @@ std::vector<MeshPart> readMesh(const cgltf_node& node, const glm::mat4& transfor
     return mesh;
 }
 
-void appendBodyDetails(const cgltf_node& parent, const cgltf_node& wheel, const glm::mat4& scale,
-                       std::vector<MeshPart>& parts)
+void appendParts(const cgltf_node& node, const glm::mat4& space, std::vector<MeshPart>& parts,
+                 CarPart visibility = CarPart::Always)
 {
-    for (std::size_t i = 0; i < parent.children_count; ++i) {
-        const cgltf_node& child = *parent.children[i];
-        if (&child == &wheel) {
-            continue;
+    if (node.mesh) {
+        auto detail = readMesh(node, space * nodeTransform(node), {0.50f, 0.50f, 0.50f});
+        for (auto& part : detail) {
+            part.carPart = visibility;
+            parts.push_back(std::move(part));
         }
-        if (child.mesh) {
-            auto detail = readMesh(child, scale * nodeTransform(child), {0.50f, 0.50f, 0.50f});
-            parts.insert(parts.end(), std::make_move_iterator(detail.begin()), std::make_move_iterator(detail.end()));
-        }
-        appendBodyDetails(child, wheel, scale, parts);
+    }
+    for (std::size_t i = 0; i < node.children_count; ++i) {
+        appendParts(*node.children[i], space, parts, visibility);
     }
 }
 
@@ -335,6 +345,19 @@ glm::vec3 mirrorHub(glm::vec3 hub)
 }
 
 } // namespace
+
+bool CarSetup::shows(CarPart part) const
+{
+    switch (part) {
+    case CarPart::HoodIntake: return hoodIntake;
+    case CarPart::Wing: return wing;
+    case CarPart::Splitter: return splitter;
+    case CarPart::Gasoline: return !diesel;
+    case CarPart::Diesel: return diesel;
+    case CarPart::Always: return true;
+    }
+    return true;
+}
 
 const CarSpec& carSpec(CarModel model)
 {
@@ -353,19 +376,34 @@ const CarSpec& carSpec(CarModel model)
     return model == CarModel::Gale ? gale : slimRider;
 }
 
-CarAsset loadCar(const std::filesystem::path& path, CarModel model)
+const CarSpec& powertrainSpec(CarModel model, bool diesel)
 {
-    const GltfFile file(path);
-    const auto& data = file.data;
+    const auto dieselVersion = [](CarSpec spec) {
+        spec.upshiftRpm = 4200.0f;
+        spec.downshiftRpm = 2050.0f;
+        spec.torqueCurve = {{{850, 420}, {1400, 640}, {2000, 1260}, {2850, 1420}, {3900, 1120}, {4600, 780}}};
+        return spec;
+    };
+    static const CarSpec slimDiesel = dieselVersion(carSpec(CarModel::SlimRider));
+    static const CarSpec galeDiesel = dieselVersion(carSpec(CarModel::Gale));
+    return diesel ? (model == CarModel::Gale ? galeDiesel : slimDiesel) : carSpec(model);
+}
 
+namespace {
+
+CarAsset readCar(const cgltf_data& data, CarModel model)
+{
     const bool isGale = model == CarModel::Gale;
-    const cgltf_node* galeBody = isGale ? exactNode(*data, "Body.001", true) : nullptr;
-    const cgltf_node* galeWheel = isGale ? exactNode(*data, "SimpleWheel.001", true) : nullptr;
-    const bool combinedGale = galeBody && exactNode(*data, "Body", true);
-    const cgltf_node& body = galeBody ? *galeBody : meshNode(*data, "Body");
-    const cgltf_node& wheel = galeWheel ? *galeWheel : meshNode(*data, "SimpleWheel");
-    const glm::vec3 authoredFront = findHub(*data, "FL", "FrontLeftWheel", combinedGale);
-    const glm::vec3 authoredRear = findHub(*data, "RL", "RearLeftWheel", combinedGale);
+    const cgltf_node* galeBody = isGale ? exactNode(data, "Body.001", true) : nullptr;
+    const bool combinedGale = galeBody && exactNode(data, "Body", true);
+    const cgltf_node& body = galeBody ? *galeBody : meshNode(data, "Body");
+    const cgltf_node* galeWheel = galeWheelNode(data);
+    const bool faceMounted = galeWheel || exactNode(data, "Exhaust", false);
+    const cgltf_node* wheel = isGale ? galeWheel : nullptr;
+    if (!wheel && isGale) wheel = exactNode(data, "SimpleWheel.001", true);
+    if (!wheel) wheel = &meshNode(data, "SimpleWheel");
+    const glm::vec3 authoredFront = findHub(data, "FL", "FrontLeftWheel", combinedGale);
+    const glm::vec3 authoredRear = findHub(data, "RL", "RearLeftWheel", combinedGale);
     const float authoredWheelbase = authoredFront.x - authoredRear.x;
     if (authoredWheelbase <= 0.0f) {
         throw std::runtime_error("Expected front hubs ahead of rear hubs");
@@ -385,9 +423,28 @@ CarAsset loadCar(const std::filesystem::path& path, CarModel model)
     CarAsset car;
     car.model = model;
     car.body = readMesh(body, bodySpace * nodeTransform(body), {0.62f, 0.14f, 0.09f});
-    car.wheel = readMesh(wheel, glm::mat4(1.0f), {0.12f, 0.13f, 0.15f});
-    car.wheelTransform = scale * nodeTransform(wheel);
-    car.wheelTransform[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+    if (faceMounted) {
+        // Blender +Y exports as -Z. Rotate the face toward the left-side socket.
+        const glm::mat4 facing = glm::scale(scale, glm::vec3(-1.0f, 1.0f, -1.0f));
+        appendParts(*wheel, facing, car.wheel);
+        float inner = std::numeric_limits<float>::infinity();
+        float outer = -inner;
+        for (const auto& part : car.wheel) {
+            for (const auto& vertex : part.vertices) {
+                inner = std::min(inner, vertex.position.z);
+                outer = std::max(outer, vertex.position.z);
+            }
+        }
+        if (car.wheel.empty()) throw std::runtime_error("Wheel assembly has no meshes");
+        const float center = (inner + outer) * 0.5f;
+        car.wheelTransform[3].z = -center;
+        front.z = authoredFront.z * metersPerUnit + center - 0.014f;
+        rear.z = authoredRear.z * metersPerUnit + center - 0.014f;
+    } else {
+        car.wheel = readMesh(*wheel, glm::mat4(1.0f), {0.12f, 0.13f, 0.15f});
+        car.wheelTransform = scale * nodeTransform(*wheel);
+        car.wheelTransform[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+    }
     car.hubs = {front, mirrorHub(front), rear, mirrorHub(rear)};
 
     float bodyMinZ = std::numeric_limits<float>::infinity();
@@ -404,18 +461,67 @@ CarAsset loadCar(const std::filesystem::path& path, CarModel model)
     for (MeshPart& part : car.body) {
         part.mirrorAcrossBody = halfBody;
     }
-    if (isGale && !combinedGale) {
-        for (std::size_t i = 0; i < data->nodes_count; ++i) {
-            const cgltf_node& node = data->nodes[i];
-            if (node.mesh && &node != &body && &node != &wheel) {
-                auto detail = readMesh(node, bodySpace * nodeTransform(node), {0.50f, 0.50f, 0.50f});
-                car.body.insert(car.body.end(), std::make_move_iterator(detail.begin()),
-                                std::make_move_iterator(detail.end()));
-            }
-        }
-    } else {
-        appendBodyDetails(body, wheel, bodySpace, car.body);
+    const auto append = [&](const cgltf_node& node, CarPart visibility) {
+        if (&node != wheel) appendParts(node, bodySpace, car.body, visibility);
+    };
+    const auto addNamed = [&](const char* name, CarPart visibility) {
+        if (const auto* node = namedNode(data, name, true)) append(*node, visibility);
+    };
+    const bool separateGale = isGale && !combinedGale;
+    for (std::size_t i = 0; i < body.children_count; ++i) {
+        const auto& child = *body.children[i];
+        const auto name = blenderBaseName(child.name ? child.name : "");
+        if (name == "HoodIntake" || name == "Wing" || name == "Splitter" || name == "Diesel") continue;
+        append(child, name == "ExhaustSide" ? CarPart::Diesel :
+                     name == "engine" ? CarPart::Gasoline : CarPart::Always);
     }
+    if (separateGale) {
+        for (const char* detail : {"enginebay", "mirror", "exhaust"}) {
+            const auto* node = namedNode(data, detail, true);
+            if (node && !node->parent) append(*node, CarPart::Always);
+        }
+        if (const auto* engine = namedNode(data, "engine", true); engine && !engine->parent) {
+            append(*engine, CarPart::Gasoline);
+        }
+    }
+    const auto addOption = [&](const char* name, CarPart visibility) {
+        const std::string nodeName = combinedGale ? std::string(name) + ".001" : name;
+        if (const auto* node = exactNode(data, nodeName, true)) append(*node, visibility);
+        else if (separateGale) addNamed(name, visibility);
+    };
+    addOption("HoodIntake", CarPart::HoodIntake);
+    addOption("Wing", CarPart::Wing);
+    addOption("Splitter", CarPart::Splitter);
+    if (isGale) {
+        addNamed("Diesel", CarPart::Diesel);
+    } else {
+        if (faceMounted) addNamed("Cylinder", CarPart::Gasoline);
+        if (const auto* side = namedNode(data, "ExhaustSide", true); side && !side->parent) {
+            append(*side, CarPart::Diesel);
+        }
+    }
+
+    const auto outlet = [&](const cgltf_node& node, glm::vec3 direction) {
+        const glm::mat4 transform = nodeTransform(node);
+        return CarAsset::Exhaust{glm::vec3(bodySpace * transform[3]), glm::normalize(direction)};
+    };
+    for (std::size_t i = 0; i < data.nodes_count; ++i) {
+        const auto& node = data.nodes[i];
+        if (node.mesh || node.children_count || !node.name || blenderBaseName(node.name) != "Exhaust") continue;
+        const glm::mat4 transform = nodeTransform(node);
+        // In the combined file, the single center tip belongs to SlimRider.
+        const bool centerTip = std::abs(transform[3].z) < 0.1f;
+        if (!faceMounted || !exactNode(data, "Body.001", true) || centerTip != isGale) {
+            car.gasolineExhaust.push_back(outlet(node, glm::vec3(transform[1])));
+        }
+    }
+    if (!isGale) {
+        if (const auto* side = namedNode(data, "DieselExhaust", false)) {
+            // The side exit faces outboard. The exported arrow shares the rear tips' rotation.
+            car.dieselExhaust.push_back(outlet(*side, glm::vec3(nodeTransform(*side)[2])));
+        }
+    }
+    if (car.dieselExhaust.empty()) car.dieselExhaust = car.gasolineExhaust;
 
     for (const MeshPart& part : car.wheel) {
         for (const Vertex& vertex : part.vertices) {
@@ -429,6 +535,27 @@ CarAsset loadCar(const std::filesystem::path& path, CarModel model)
     }
     car.groundHeight = std::min(front.y, rear.y) - car.wheelRadius;
     return car;
+}
+
+} // namespace
+
+CarAsset loadCar(const std::filesystem::path& path, CarModel model)
+{
+    return readCar(*GltfFile(path).data, model);
+}
+
+CarAsset loadGameCar(const std::filesystem::path& assets, CarModel model)
+{
+    const auto path = assets / carSpec(model).assetFile;
+    const auto galePath = assets / carSpec(CarModel::Gale).assetFile;
+    if (model == CarModel::SlimRider && std::filesystem::is_regular_file(galePath)) {
+        const GltfFile combined(galePath);
+        if (exactNode(*combined.data, "Body", true) && exactNode(*combined.data, "Body.001", true) &&
+            galeWheelNode(*combined.data)) {
+            return readCar(*combined.data, model);
+        }
+    }
+    return loadCar(path, model);
 }
 
 std::vector<MeshPart> loadScenery(const std::filesystem::path& path)

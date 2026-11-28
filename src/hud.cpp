@@ -164,7 +164,7 @@ void slimHud(UiDraw& ui, glm::vec2 corner, const CarState& car, const CarSpec& s
 void drawHud(UiDraw& ui, const CarState& car, CarModel model, std::string_view course,
              std::string_view pauseKey, bool active)
 {
-    const auto& spec = carSpec(model);
+    const auto& spec = powertrainSpec(model, car.setup.diesel);
     const auto view = ui.viewportBounds();
     const glm::vec2 corner{view.x + view.w - 25, view.y + view.h - 25};
     const auto mph = std::min(999L, std::lround(glm::length(car.velocity) * metersPerSecondToMph));
@@ -173,4 +173,11 @@ void drawHud(UiDraw& ui, const CarState& car, CarModel model, std::string_view c
     indicators(ui, view, course, spec.name, pauseKey, active, gale);
     if (gale) galeHud(ui, corner, car, spec, speed);
     else slimHud(ui, corner, car, spec, speed, active);
+    if (car.setup.diesel) {
+        const glm::vec2 position = corner - glm::vec2(gale ? 175.0f : 166.0f, gale ? 163.0f : 178.0f);
+        const auto tenths = static_cast<int>(std::lround(car.boost * 10.0f));
+        ui.rounded({position.x - 8, position.y - 4, 172, 26}, 6, {0.02f, 0.025f, 0.035f, 0.88f});
+        ui.text("BOOST  " + std::to_string(tenths / 10) + "." + std::to_string(tenths % 10) + " BAR",
+                position, 17, white);
+    }
 }

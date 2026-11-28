@@ -75,6 +75,30 @@ vec3 skyRadiance(vec3 direction) {
     sky += vec3(0.20, 0.12, 0.044) * nearSun * (1.0 - height * 0.45);
     return mix(sky, vec3(0.094, 0.108, 0.119), belowHorizon);
 }
+
+float skyHash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float skyNoise(vec2 p) {
+    vec2 cell = floor(p);
+    vec2 f = fract(p);
+    vec2 blend = f * f * (3.0 - 2.0 * f);
+    return mix(mix(skyHash(cell), skyHash(cell + vec2(1, 0)), blend.x),
+               mix(skyHash(cell + vec2(0, 1)), skyHash(cell + vec2(1)), blend.x), blend.y);
+}
+
+float cloudCover(vec3 direction) {
+    if (direction.y <= 0.015) return 0.0;
+    vec2 p = direction.xz / (direction.y + 0.13) * vec2(1.8, 1.2);
+    float clouds = skyNoise(p) * 0.57 + skyNoise(p * 2.1) * 0.28 + skyNoise(p * 4.3) * 0.15;
+    return smoothstep(0.49, 0.72, clouds) * smoothstep(0.015, 0.13, direction.y);
+}
+
+vec3 cloudedSky(vec3 direction, float cover) {
+    vec3 cloud = uNight ? vec3(0.026, 0.038, 0.061) : vec3(0.91, 0.93, 0.95);
+    return mix(skyRadiance(direction), cloud, cover * 0.66);
+}
 )glsl";
 
 constexpr const char* materialFragment = R"glsl(
@@ -90,10 +114,13 @@ uniform float uLensTint;
 uniform bool uGroundPass;
 uniform bool uMenuLight;
 uniform int uCourse;
+uniform vec3 uOvalDimensions;
 uniform sampler2D uBaseColor;
 uniform bool uTextured;
 uniform vec2 uAlphaMask;
 uniform bool uCampGround;
+uniform bool uPaint;
+uniform float uGroundHeight;
 
 out vec4 pixelColor;
 
@@ -108,6 +135,36 @@ float sunlight(vec3 normal) {
     return sceneShadow(worldPosition, bias, uHasDistantShadow ? 3 : 2);
 }
 
+float softbox(vec3 ray, vec3 axis, vec3 right, vec2 size) {
+    float facing = dot(ray, axis);
+    vec2 offset = abs(vec2(dot(ray, right), dot(ray, cross(axis, right))));
+    vec2 edge = 1.0 - smoothstep(size * 0.70, size, offset / max(facing, 0.001));
+    return edge.x * edge.y * step(0.0, facing);
+}
+
+vec3 paintEnvironment(vec3 reflection) {
+    if (uMenuLight) {
+        vec3 studio = mix(vec3(0.043, 0.055, 0.078), vec3(0.47, 0.60, 0.77),
+                          smoothstep(-0.12, 0.42, reflection.y));
+        float key = softbox(reflection, vec3(-0.60, 0.80, 0.0), vec3(0, 0, 1), vec2(1.28, 0.19));
+        float fill = softbox(reflection, vec3(0.0, 0.60, 0.80), vec3(1, 0, 0), vec2(0.95, 0.16));
+        return studio + key * vec3(3.6, 3.8, 4.0) + fill * vec3(1.75, 2.02, 2.38);
+    }
+    if (reflection.y > 0.0) return cloudedSky(reflection, cloudCover(reflection));
+    float groundMix = smoothstep(0.0, 0.15, -reflection.y);
+    vec3 ground = uCourse == 2 ? vec3(0.125, 0.158, 0.084) :
+                  uCourse == 1 ? vec3(0.31, 0.22, 0.15) : vec3(0.10, 0.13, 0.16);
+    if (uCourse == 0) {
+        float distanceToGround = max(0.0, worldPosition.y - uGroundHeight) / max(0.015, -reflection.y);
+        vec2 grid = (worldPosition.xz + reflection.xz * distanceToGround) / 2.5;
+        vec2 distanceToLine = abs(fract(grid + 0.5) - 0.5);
+        float line = (1.0 - smoothstep(0.005, 0.03, min(distanceToLine.x, distanceToLine.y))) *
+                     (1.0 - smoothstep(3.0, 12.0, distanceToGround));
+        ground += line * vec3(0.10, 0.13, 0.13);
+    }
+    return mix(skyRadiance(reflection), ground * (uNight ? 0.16 : 1.0), groundMix);
+}
+
 void main() {
     vec3 toEye = uEye - worldPosition;
     float distanceToEye = length(toEye);
@@ -120,17 +177,17 @@ void main() {
         float line = max(lines.x, lines.y) * (1.0 - smoothstep(12.0, 55.0, distanceToEye));
         vec3 asphalt = mix(uColor, vec3(0.15, 0.19, 0.205), line * 0.68);
         if (uCourse == 1) {
-            vec2 oval = worldPosition.xz - vec2(0.0, 26.0);
-            vec2 turn = vec2(max(abs(oval.x) - 46.0, 0.0), oval.y);
-            float distanceOnTrack = length(turn) - 26.0;
+            vec2 oval = worldPosition.xz - vec2(0.0, uOvalDimensions.y);
+            vec2 turn = vec2(max(abs(oval.x) - uOvalDimensions.x, 0.0), oval.y);
+            float distanceOnTrack = length(turn) - uOvalDimensions.y;
             float edge = abs(distanceOnTrack);
             float aa = max(fwidth(distanceOnTrack), 0.025);
             float curb = 1.0 - smoothstep(0.38, 0.38 + aa, abs(edge - 5.2));
-            float paved = 1.0 - smoothstep(5.4 - aa, 5.8 + aa, edge);
+            float paved = 1.0 - smoothstep(uOvalDimensions.z - 0.2 - aa, uOvalDimensions.z + 0.2 + aa, edge);
             float sand = 0.5 + 0.25 * sin(oval.x * 0.91 + oval.y * 0.35) * cos(oval.y * 0.83 - oval.x * 0.21);
             asphalt = mix(mix(vec3(0.41, 0.25, 0.15), vec3(0.52, 0.34, 0.21), sand),
                           vec3(0.083, 0.097, 0.116), paved);
-            float distanceStripe = abs(oval.x) < 46.0 ? oval.x : atan(turn.y, turn.x) * 26.0;
+            float distanceStripe = abs(oval.x) < uOvalDimensions.x ? oval.x : atan(turn.y, turn.x) * uOvalDimensions.y;
             asphalt = mix(asphalt, mix(vec3(0.87, 0.78, 0.60), vec3(0.50, 0.12, 0.08),
                           step(0.5, fract(distanceStripe * 0.56))), curb);
             float start = (1.0 - smoothstep(0.30, 0.30 + aa, abs(oval.x - 12.0))) * paved;
@@ -181,10 +238,20 @@ void main() {
     vec3 diffuse = albedo * daylight * (1.0 - metallic * 0.86);
     if (uNight && uCourse == 2) diffuse *= vec3(0.71, 0.84, 1.04);
     vec3 specular = mix(mix(vec3(0.045), albedo, metallic), vec3(1.0), fresnel * 0.72);
-    vec3 coat = skyRadiance(reflection) * clearcoat * (0.085 + 0.18 * fresnel);
-    float coatSun = pow(max(dot(reflection, uSunDirection), 0.0), 125.0);
-    coat += clearcoat * direct * coatSun * vec3(1.85, 1.55, 1.18);
-    vec3 shaded = diffuse + environment * specular + coat + uEmissive;
+    vec3 shaded = diffuse + environment * specular;
+    float coatSun = pow(max(dot(reflection, uSunDirection), 0.0), 170.0);
+    if (uPaint) {
+        float coatFresnel = 0.04 + 0.96 * fresnel;
+        vec3 coat = paintEnvironment(reflection);
+        if (!uMenuLight) {
+            coat += direct * coatSun * (uNight ? vec3(0.35, 0.42, 0.53) : vec3(4.5, 3.9, 2.9));
+        }
+        shaded = shaded * (1.0 - clearcoat * coatFresnel) + coat * clearcoat * coatFresnel;
+    } else {
+        shaded += skyRadiance(reflection) * clearcoat * (0.085 + 0.18 * fresnel);
+        shaded += clearcoat * direct * coatSun * vec3(1.85, 1.55, 1.18);
+    }
+    shaded += uEmissive;
     pixelColor = vec4(mix(shaded, skyRadiance(-view), fog), 1.0);
 }
 )glsl";
@@ -198,24 +265,12 @@ uniform float uTime;
 uniform float uMenuColor;
 out vec4 pixelColor;
 
-float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
-
-float noise(vec2 p) {
-    vec2 cell = floor(p);
-    vec2 f = fract(p);
-    vec2 blend = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(cell), hash(cell + vec2(1.0, 0.0)), blend.x),
-               mix(hash(cell + vec2(0.0, 1.0)), hash(cell + vec2(1.0, 1.0)), blend.x), blend.y);
-}
-
 void main() {
     if (uMenu) {
         vec2 p = clipPosition * 0.5 + 0.5;
         float wave = sin(p.x * 5.2 - uTime * 0.32) * 0.060 + sin(p.x * 2.5 + uTime * 0.19) * 0.075;
         float sweep = p.y + p.x * 0.48 + wave;
-        float dither = (hash(mod(gl_FragCoord.xy, 128.0)) - 0.5) * 0.026;
+        float dither = (skyHash(mod(gl_FragCoord.xy, 128.0)) - 0.5) * 0.026;
         float blue = smoothstep(0.75, 0.88, sweep + dither);
         vec3 tone = mix(vec3(0.83, 0.91, 0.96), vec3(0.25, 0.52, 0.71), blue);
         float ribbon = 1.0 - smoothstep(0.009, 0.014, abs(sweep - 0.755));
@@ -240,14 +295,9 @@ void main() {
         return;
     }
     vec3 ray = normalize((uClipToWorld * vec4(clipPosition, 1.0, 1.0)).xyz);
-    vec3 sky = skyRadiance(ray);
+    float cover = cloudCover(ray);
+    vec3 sky = cloudedSky(ray, cover);
     if (ray.y > 0.0) {
-        vec2 cloudPosition = ray.xz / (ray.y + 0.13) * vec2(1.8, 1.2);
-        float clouds = noise(cloudPosition) * 0.57 + noise(cloudPosition * 2.1) * 0.28 +
-                       noise(cloudPosition * 4.3) * 0.15;
-        float cover = smoothstep(0.49, 0.72, clouds) * smoothstep(0.015, 0.13, ray.y);
-        vec3 cloudColor = uNight ? vec3(0.026, 0.038, 0.061) : vec3(0.91, 0.93, 0.95);
-        sky = mix(sky, cloudColor, cover * 0.66);
         float sun = smoothstep(0.99962, 0.9998, dot(ray, uSunDirection));
         if (!uNight) {
             sky += vec3(4.8, 3.9, 2.5) * sun;
@@ -397,7 +447,8 @@ void ChaseCamera::updateSpeed(float metersPerSecond, float dt)
 
 Renderer::MeshBuffer::MeshBuffer(const MeshPart& part)
     : indexCount_(static_cast<GLsizei>(part.indices.size())), surface_(part.surface),
-      mirrorAcrossBody_(part.mirrorAcrossBody), alphaCutoff_(part.alphaCutoff), alphaFactor_(part.alphaFactor)
+      mirrorAcrossBody_(part.mirrorAcrossBody), carPart_(part.carPart),
+      alphaCutoff_(part.alphaCutoff), alphaFactor_(part.alphaFactor)
 {
     glGenVertexArrays(1, &vertexArray_);
     glGenBuffers(1, &vertexBuffer_);
@@ -433,7 +484,8 @@ Renderer::MeshBuffer::MeshBuffer(MeshBuffer&& other) noexcept
       vertexBuffer_(std::exchange(other.vertexBuffer_, 0)),
       indexBuffer_(std::exchange(other.indexBuffer_, 0)),
       texture_(std::exchange(other.texture_, 0)), indexCount_(other.indexCount_), surface_(other.surface_),
-      mirrorAcrossBody_(other.mirrorAcrossBody_), alphaCutoff_(other.alphaCutoff_), alphaFactor_(other.alphaFactor_)
+      mirrorAcrossBody_(other.mirrorAcrossBody_), carPart_(other.carPart_),
+      alphaCutoff_(other.alphaCutoff_), alphaFactor_(other.alphaFactor_)
 {
 }
 
@@ -738,12 +790,15 @@ Renderer::Renderer(const CarAsset& asset, const std::filesystem::path& assets)
     campGround_ = glGetUniformLocation(program_, "uCampGround");
     viewProjection_ = glGetUniformLocation(program_, "uViewProjection");
     color_ = glGetUniformLocation(program_, "uColor");
+    paint_ = glGetUniformLocation(program_, "uPaint");
+    groundHeight_ = glGetUniformLocation(program_, "uGroundHeight");
     surface_ = glGetUniformLocation(program_, "uSurface");
     emissive_ = glGetUniformLocation(program_, "uEmissive");
     lensTint_ = glGetUniformLocation(program_, "uLensTint");
     eye_ = glGetUniformLocation(program_, "uEye");
     groundPass_ = glGetUniformLocation(program_, "uGroundPass");
     course_ = glGetUniformLocation(program_, "uCourse");
+    ovalDimensions_ = glGetUniformLocation(program_, "uOvalDimensions");
     menuLight_ = glGetUniformLocation(program_, "uMenuLight");
     night_ = glGetUniformLocation(program_, "uNight");
     sunDirection_ = glGetUniformLocation(program_, "uSunDirection");
@@ -763,7 +818,7 @@ Renderer::~Renderer()
 }
 
 void Renderer::draw(const MeshBuffer& mesh, const glm::mat4& model, bool night, bool braking,
-                    GLuint instances, GLsizei count) const
+                    GLuint instances, GLsizei count, const glm::vec3* paint) const
 {
     glUniform1i(instanced_, instances != 0);
     glUniform1i(textured_, mesh.texture() != 0);
@@ -777,7 +832,8 @@ void Renderer::draw(const MeshBuffer& mesh, const glm::mat4& model, bool night, 
                           (surface.lightControl == LightControl::Night && night) ||
                           (surface.lightControl == LightControl::Brake && braking);
     const glm::vec3 emission = emitting ? surface.emission : glm::vec3(0.0f);
-    glUniform3fv(color_, 1, glm::value_ptr(surface.color));
+    glUniform3fv(color_, 1, glm::value_ptr(surface.paint && paint ? *paint : surface.color));
+    glUniform1i(paint_, surface.paint);
     glUniform3fv(emissive_, 1, glm::value_ptr(emission));
     glUniform1f(lensTint_, surface.lensTint);
     glUniform4f(surface_, surface.metallic, surface.roughness, surface.clearcoat, surface.opacity);
@@ -830,19 +886,8 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
         camp_->update(*camp, car.position, eye, projection[1][1] * height * 0.5f);
     }
 
-    glm::mat4 baseModel = glm::translate(identity, car.position);
-    if (camp) {
-        baseModel *= glm::mat4(campGroundFrame(car));
-        baseModel = glm::translate(baseModel, -up * asset.groundHeight);
-    } else {
-        baseModel = glm::rotate(baseModel, car.heading, up);
-    }
-    const CarSpec& spec = carSpec(asset.model);
-    const float pivot = asset.groundHeight + spec.centerOfGravityHeight;
-    glm::mat4 bodyModel = glm::translate(baseModel, up * (pivot + car.suspension.heave));
-    bodyModel = glm::rotate(bodyModel, car.suspension.pitch, axle);
-    bodyModel = glm::rotate(bodyModel, car.suspension.roll, glm::vec3(1.0f, 0.0f, 0.0f));
-    bodyModel = glm::translate(bodyModel, -up * pivot);
+    const glm::mat4 baseModel = vehicleTransform(asset, car, camp != nullptr);
+    const glm::mat4 bodyModel = bodyTransform(asset, car, baseModel);
     const glm::mat4 mirrored = glm::scale(bodyModel, glm::vec3(1.0f, 1.0f, -1.0f));
     std::array<glm::mat4, 4> wheelModels;
     for (std::size_t i = 0; i < asset.hubs.size(); ++i) {
@@ -857,7 +902,7 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     }
     const auto drawOpaque = [&](auto&& drawPart) {
         for (const MeshBuffer& part : body_) {
-            if (part.surface().opacity >= 1.0f) {
+            if (part.surface().opacity >= 1.0f && car.setup.shows(part.carPart())) {
                 drawPart(part, bodyModel);
                 if (part.mirrorAcrossBody()) {
                     drawPart(part, mirrored);
@@ -929,6 +974,8 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     glUniform1i(campGround_, GL_FALSE);
     const Course shaderCourse = scene.menu ? Course::TestGrid : scene.course;
     glUniform1i(course_, static_cast<int>(shaderCourse));
+    glUniform3f(ovalDimensions_, ovalStraightHalfLength, ovalTurnRadius, ovalRoadHalfWidth);
+    glUniform1f(groundHeight_, asset.groundHeight);
     glUniform3fv(sunDirection_, 1, glm::value_ptr(lightDirection));
     glUniform3fv(eye_, 1, glm::value_ptr(eye));
     glUniformMatrix4fv(viewProjection_, 1, GL_FALSE, glm::value_ptr(viewProjection));
@@ -945,7 +992,10 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
         camp_->drawProps([&](const MeshBuffer& prop, GLuint buffer, GLsizei count) {
             draw(prop, identity, night, false, buffer, count);
         });
-        camp_->grass().draw(viewProjection, lighting, camp->origin(), scene.time, night);
+        const auto& outlets = car.setup.diesel ? asset.dieselExhaust : asset.gasolineExhaust;
+        const float rpmFraction = (car.rpm - idleRpm) / (powertrainSpec(asset.model, car.setup.diesel).torqueCurve.back().rpm - idleRpm);
+        const float exhaustFlow = car.engineLoad * glm::smoothstep(0.08f, 0.8f, rpmFraction);
+        camp_->grass().draw(viewProjection, lighting, camp->origin(), scene.time, night, outlets, bodyModel, exhaustFlow);
         glUseProgram(program_);
     } else if (!scene.menu) {
         glUniform1i(groundPass_, GL_TRUE);
@@ -959,13 +1009,17 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     }
     glUniform1i(groundPass_, GL_FALSE);
 
+    const glm::vec3 srgb = glm::vec3(glm::max(car.setup.paint, glm::ivec3(0))) / 255.0f;
+    const glm::vec3 linearPaint = glm::mix(srgb / 12.92f, glm::pow((srgb + 0.055f) / 1.055f, glm::vec3(2.4f)),
+                                          glm::greaterThan(srgb, glm::vec3(0.04045f)));
+    const glm::vec3* paint = car.setup.paint.x >= 0 ? &linearPaint : nullptr;
     drawOpaque([&](const MeshBuffer& part, const glm::mat4& model) {
-        draw(part, model, night, car.brakeLights);
+        draw(part, model, night, car.brakeLights, 0, 0, paint);
     });
 
     const auto drawGlass = [&]() {
         for (const MeshBuffer& part : body_) {
-            if (part.surface().opacity < 1.0f) {
+            if (part.surface().opacity < 1.0f && car.setup.shows(part.carPart())) {
                 draw(part, bodyModel, night, car.brakeLights);
                 if (part.mirrorAcrossBody()) {
                     glFrontFace(GL_CW);

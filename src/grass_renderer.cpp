@@ -1,4 +1,5 @@
 #include "grass_renderer.hpp"
+#include "driving.hpp"
 #include "shader.hpp"
 #include "shadow_sampling.hpp"
 
@@ -18,6 +19,9 @@ layout (location = 3) in vec4 ground;
 uniform mat4 uViewProjection;
 uniform float uWind;
 uniform bool uNight;
+uniform vec4 uJetOrigins[4];
+uniform vec3 uJetDirections[4];
+uniform int uJetCount;
 out vec3 bladeColor;
 
 void main() {
@@ -31,6 +35,19 @@ void main() {
     lateral += vec2(0.86, 0.51) * (0.20 + 0.16 * gust) * bend * height * (1.0 - shape.w);
     lateral += ground.xy * bend * height * shape.w * 0.99;
     float rise = tip * height * mix(1.0, 0.075, shape.w);
+    for (int i = 0; i < uJetCount; ++i) {
+        vec3 delta = rootHeight.xyz + vec3(0.0, height * 0.64, 0.0) - uJetOrigins[i].xyz;
+        vec3 jet = uJetDirections[i];
+        float distanceAlong = dot(delta, jet);
+        float distanceAcross = length(delta - jet * distanceAlong);
+        float spread = 0.34 + max(0.0, distanceAlong) * 0.36;
+        float blast = (1.0 - smoothstep(spread * 0.13, spread, distanceAcross)) *
+                      smoothstep(-0.22, 0.18, distanceAlong) *
+                      (1.0 - smoothstep(0.23, 2.1, distanceAlong)) * uJetOrigins[i].w;
+        float flutter = 0.84 + sin(uWind * 21.0 - distanceAlong * 12.0 + shape.y) * 0.16;
+        lateral += jet.xz * blast * bend * height * flutter * 2.0;
+        rise *= 1.0 - blast * bend * 0.58;
+    }
     vec3 position = rootHeight.xyz + vec3(lateral.x, rise + dot(ground.zw, lateral), lateral.y);
     gl_Position = uViewProjection * vec4(position, 1.0);
 
@@ -87,6 +104,9 @@ GrassRenderer::GrassRenderer(const SceneryQuality& quality) : quality_(quality)
     viewProjection_ = glGetUniformLocation(program_, "uViewProjection");
     wind_ = glGetUniformLocation(program_, "uWind");
     night_ = glGetUniformLocation(program_, "uNight");
+    jetOrigins_ = glGetUniformLocation(program_, "uJetOrigins[0]");
+    jetDirections_ = glGetUniformLocation(program_, "uJetDirections[0]");
+    jetCount_ = glGetUniformLocation(program_, "uJetCount");
     shadows_.initialize(program_, 0);
 
     for (std::size_t i = 0; i < batches_.size(); ++i) {
@@ -194,7 +214,8 @@ void GrassRenderer::update(const CampWorld& world, const glm::vec3& player)
 }
 
 void GrassRenderer::draw(const glm::mat4& viewProjection, const SceneShadows& shadows,
-                         glm::dvec2 origin, float time, bool night) const
+                         glm::dvec2 origin, float time, bool night, const std::vector<CarAsset::Exhaust>& outlets,
+                         const glm::mat4& body, float exhaustFlow) const
 {
     glUseProgram(program_);
     shadows_.bind(shadows);
@@ -202,6 +223,19 @@ void GrassRenderer::draw(const glm::mat4& viewProjection, const SceneShadows& sh
     constexpr double tau = 6.283185307179586;
     glUniform1f(wind_, static_cast<float>(std::remainder(origin.x * 0.25 + origin.y * 0.19 + time * 1.56, tau)));
     glUniform1i(night_, night);
+    std::array<glm::vec4, 4> origins;
+    std::array<glm::vec3, 4> directions;
+    const int count = exhaustFlow > 0.01f ? static_cast<int>(std::min(outlets.size(), origins.size())) : 0;
+    for (int i = 0; i < count; ++i) {
+        const auto outlet = transformExhaust(outlets[i], body);
+        origins[i] = {outlet.position, exhaustFlow};
+        directions[i] = outlet.direction;
+    }
+    glUniform1i(jetCount_, count);
+    if (count) {
+        glUniform4fv(jetOrigins_, count, glm::value_ptr(origins[0]));
+        glUniform3fv(jetDirections_, count, glm::value_ptr(directions[0]));
+    }
     for (const auto& batch : batches_) {
         if (batch.plants.empty()) continue;
         glBindVertexArray(batch.array);

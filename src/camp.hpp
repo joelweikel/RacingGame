@@ -1,6 +1,7 @@
 #pragma once
 
 #include "car.hpp"
+#include "course.hpp"
 
 #include <unordered_map>
 
@@ -25,11 +26,6 @@ struct CampChunk {
     std::vector<CampPlacement> props;
 };
 
-struct CampSurface {
-    float height;
-    float grip;
-};
-
 struct CampGrassPlant {
     glm::vec3 root;
     glm::vec2 slope;
@@ -48,7 +44,7 @@ class CampWorld {
 public:
     explicit CampWorld(std::uint32_t seed = 4617u) : seed_(seed) {}
 
-    CampSurface surface(const glm::vec3& position) const;
+    GroundContact surface(const glm::vec3& position) const;
     glm::vec3 spawn() const;
     float spawnHeading() const;
     glm::vec3 rebase(glm::vec3& position);
@@ -72,7 +68,8 @@ private:
     double roadCenter(double x) const;
     double roadHeight(double x) const;
     double height(double x, double z, double offset) const;
-    double meshHeight(double x, double z, glm::vec2* slope = nullptr) const;
+    double meshHeight(double x, double z, glm::vec2* slope = nullptr, GroundSurface* surface = nullptr) const;
+    GroundSurface surfaceMaterial(double x, double offset, const Campsite& site) const;
     Campsite campsiteAt(double x) const;
     float gravel(double x, double offset, const Campsite& site) const;
     float random(std::int64_t x, std::int64_t z, std::uint32_t salt) const;

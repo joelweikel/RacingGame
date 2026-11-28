@@ -108,17 +108,34 @@ double CampWorld::height(double x, double z, double offset) const
     return mix(ground, padHeight, clearing);
 }
 
-CampSurface CampWorld::surface(const glm::vec3& position) const
+GroundContact groundContact(Course course, const CampWorld* camp, const glm::vec3& position, float groundHeight)
+{
+    if (camp) return camp->surface(position);
+    if (course == Course::DustlineOval) {
+        const glm::vec2 turn(std::max(0.0f, std::abs(position.x) - ovalStraightHalfLength), position.z - ovalTurnRadius);
+        if (std::abs(glm::length(turn) - ovalTurnRadius) >= ovalRoadHalfWidth) {
+            return {groundHeight, GroundSurface::Sand};
+        }
+    }
+    return {groundHeight, GroundSurface::Asphalt};
+}
+
+GroundContact CampWorld::surface(const glm::vec3& position) const
 {
     const double x = origin_.x + position.x;
     const double z = origin_.y + position.z;
-    const double offset = z - roadCenter(x);
-    const float pavement = static_cast<float>(1.0 - smooth(roadHalfWidth, roadHalfWidth + 0.8, std::abs(offset)));
-    const float packed = gravel(x, offset, campsiteAt(x));
-    return {static_cast<float>(meshHeight(x, z)), glm::mix(glm::mix(0.63f, 0.79f, packed), 1.0f, pavement)};
+    GroundSurface material;
+    const auto elevation = static_cast<float>(meshHeight(x, z, nullptr, &material));
+    return {elevation, material};
 }
 
-double CampWorld::meshHeight(double x, double z, glm::vec2* slope) const
+GroundSurface CampWorld::surfaceMaterial(double x, double offset, const Campsite& site) const
+{
+    if (std::abs(offset) < roadHalfWidth) return GroundSurface::Asphalt;
+    return gravel(x, offset, site) > 0.55f ? GroundSurface::Gravel : GroundSurface::Dirt;
+}
+
+double CampWorld::meshHeight(double x, double z, glm::vec2* slope, GroundSurface* surface) const
 {
     const double start = std::floor(x / terrainStep) * terrainStep;
     const double end = start + terrainStep;
@@ -133,6 +150,10 @@ double CampWorld::meshHeight(double x, double z, glm::vec2* slope) const
         const auto next = std::upper_bound(roadColumns.begin(), roadColumns.end(), offset);
         low = *(next - 1);
         high = *next;
+    }
+    if (surface) {
+        const double midpoint = (start + end) * 0.5;
+        *surface = surfaceMaterial(midpoint, (low + high) * 0.5, campsiteAt(midpoint));
     }
     const double across = (offset - low) / (high - low);
     const double a = height(start, centerA + low, low);
@@ -413,8 +434,9 @@ CampChunk CampWorld::buildChunk(CampTile tile, int stride) const
         const Campsite site = campsiteAt(x + terrainStep * 0.5);
         for (std::uint32_t column = 0; column + 1 < columns; ++column) {
             const double offset = (offsets[column] + offsets[column + 1]) * 0.5;
-            MeshPart& mesh = std::abs(offset) < roadHalfWidth ? asphalt
-                : gravel(x + terrainStep * 0.5, offset, site) > 0.55f ? gravelMesh : terrain;
+            const auto material = surfaceMaterial(x + terrainStep * 0.5, offset, site);
+            MeshPart& mesh = material == GroundSurface::Asphalt ? asphalt :
+                             material == GroundSurface::Gravel ? gravelMesh : terrain;
             const auto start = static_cast<std::uint32_t>(row) * columns + column;
             quad(mesh, start, start + 1, start + columns + 1, start + columns);
         }

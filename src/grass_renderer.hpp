@@ -15,7 +15,9 @@ public:
     GrassRenderer& operator=(const GrassRenderer&) = delete;
 
     void update(const CampWorld& world, const glm::vec3& player);
-    void draw(const glm::mat4& viewProjection, const SceneShadows& shadows, glm::dvec2 origin, float time, bool night) const;
+    void draw(const glm::mat4& viewProjection, const SceneShadows& shadows, glm::dvec2 origin,
+              float time, bool night, const std::vector<CarAsset::Exhaust>& outlets,
+              const glm::mat4& body, float exhaustFlow) const;
 
 private:
     struct Instance {
@@ -40,4 +42,7 @@ private:
     ShadowSampling shadows_;
     GLint wind_ = -1;
     GLint night_ = -1;
+    GLint jetOrigins_ = -1;
+    GLint jetDirections_ = -1;
+    GLint jetCount_ = -1;
 };

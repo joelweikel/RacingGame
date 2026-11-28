@@ -11,7 +11,7 @@ public:
     ~GameAudio();
     GameAudio(const GameAudio&) = delete;
     GameAudio& operator=(const GameAudio&) = delete;
-    void update(CarModel model, const CarState& car, const DriveInput& input, bool driving);
+    void update(CarModel model, const CarState& car, bool driving);
 
 private:
     struct Playback;

@@ -14,7 +14,8 @@ public:
     TireEffects(const TireEffects&) = delete;
     TireEffects& operator=(const TireEffects&) = delete;
 
-    void update(const CarAsset& asset, const CarState& car, float dt, const CampWorld* camp = nullptr);
+    void update(const CarAsset& asset, const CarState& car, float dt, const CampWorld* camp = nullptr,
+                Course course = Course::TestGrid);
     void clear();
     void shiftOrigin(const glm::vec3& shift);
     void renderContactShadow(const CarAsset& asset, const CarState& car, const glm::mat4& viewProjection);
@@ -25,6 +26,8 @@ public:
     std::size_t smokeCount() const { return smoke_.size(); }
 
 private:
+    enum class ParticleKind { TireSmoke, Soot, Flame, DirtDust, GravelDust, SandDust };
+
     struct Emitter {
         glm::vec3 lastMark{0.0f};
         glm::vec3 markSide{0.0f};
@@ -50,12 +53,14 @@ private:
         float radius;
         float strength;
         float angle;
+        ParticleKind kind = ParticleKind::TireSmoke;
     };
 
     struct EffectVertex {
         glm::vec3 position;
         glm::vec2 uv;
         float opacity;
+        float kind = 0.0f;
     };
 
     enum class Pass { Marks, Smoke, Shadow };
@@ -71,6 +76,7 @@ private:
     const std::size_t markLimit_;
     const float smokeDensity_;
     std::uint32_t randomState_ = 1234567u;
+    float exhaustCredit_ = 0.0f;
     GLuint program_ = 0;
     GLuint vertexArray_ = 0;
     GLuint buffer_ = 0;

@@ -174,10 +174,52 @@ void smokeTestDonuts(const CarAsset& asset)
     }
 }
 
+void smokeTestOvalSurfaces(const CarAsset& asset, TireEffects& effects)
+{
+    constexpr Course course = Course::DustlineOval;
+    CarState road, sand;
+    sand.position.z = 18.0f;
+    road.velocity.x = sand.velocity.x = 22.0f;
+    for (CarState* state : {&road, &sand}) {
+        for (auto& wheel : state->wheels) wheel.angularSpeed = state->velocity.x / asset.wheelRadius;
+        for (int step = 0; step < 60; ++step) drive(*state, asset, {0.0f, 0.0f, true}, fixedStep, nullptr, course);
+    }
+    if (road.velocity.x >= sand.velocity.x - 1.5f) {
+        throw std::runtime_error("Dustline Oval asphalt did not brake harder than sand");
+    }
+
+    CarState sliding;
+    sliding.velocity.x = 22.0f;
+    for (auto& wheel : sliding.wheels) wheel.slip = 0.8f;
+    const auto advance = [&](float z, int steps) {
+        sliding.position.z = z;
+        for (int step = 0; step < steps; ++step) {
+            sliding.position += sliding.velocity * fixedStep;
+            effects.update(asset, sliding, fixedStep, nullptr, course);
+        }
+    };
+    const auto mixedZ = ovalRoadHalfWidth;
+    advance(mixedZ, 15);
+    if (effects.markCount() == 0 || effects.markCount() > 28) {
+        throw std::runtime_error("Dustline Oval did not restrict marks to the paved-side tires");
+    }
+    const auto pavedMarks = effects.markCount();
+    for (auto& wheel : sliding.wheels) wheel.slip = 0.0f;
+    advance(18.0f, 20);
+    if (effects.markCount() != pavedMarks) throw std::runtime_error("Dustline Oval sand added rubber");
+    effects.clear();
+    advance(18.0f, 20);
+    if (effects.markCount() != 0 || effects.smokeCount() == 0) {
+        throw std::runtime_error("Rolling on Dustline Oval sand did not kick up dust");
+    }
+    effects.clear();
+}
+
 void smokeTest(const CarAsset& asset, Renderer& renderer, TireEffects& effects, GLFWwindow* window,
                const std::filesystem::path& assets)
 {
     smokeTestDonuts(asset);
+    smokeTestOvalSurfaces(asset, effects);
     CarState car;
     effects.update(asset, car, fixedStep);
     if (effects.markCount() != 0 || effects.smokeCount() != 0) {
@@ -403,6 +445,70 @@ void smokeTest(const CarAsset& asset, Renderer& renderer, TireEffects& effects, 
               << " wheel primitives; verified camera orbit, suspension, speed effects, skid effects, and rear lights.\n";
 }
 
+void smokeTestGarage(const CarAsset& asset, TireEffects& effects)
+{
+    if (asset.gasolineExhaust.empty()) return; // Legacy exports have no exhaust markers.
+    const bool gale = asset.model == CarModel::Gale;
+    if (asset.gasolineExhaust.size() != (gale ? 2u : 1u) ||
+        asset.dieselExhaust.size() != (gale ? 2u : 1u) || (gale && asset.wheel.size() < 6)) {
+        throw std::runtime_error("Missing authored exhaust sockets or Gale wheel components");
+    }
+    for (const auto option : {CarPart::HoodIntake, CarPart::Splitter, CarPart::Wing, CarPart::Diesel}) {
+        if (std::none_of(asset.body.begin(), asset.body.end(), [&](const MeshPart& part) {
+            return part.carPart == option;
+        })) throw std::runtime_error("Missing authored garage option");
+    }
+
+    CarState stock, intake;
+    intake.setup.hoodIntake = true;
+    stock.velocity.x = intake.velocity.x = 20.0f;
+    for (CarState* variant : {&stock, &intake}) {
+        for (auto& wheel : variant->wheels) wheel.angularSpeed = variant->velocity.x / asset.wheelRadius;
+        for (int step = 0; step < 120; ++step) drive(*variant, asset, {0.55f}, fixedStep);
+    }
+    if (intake.velocity.x <= stock.velocity.x) throw std::runtime_error("Hood intake did not increase acceleration");
+
+    CarState aero = stock;
+    aero.setup.splitter = aero.setup.wing = true;
+    for (int step = 0; step < 14400; ++step) {
+        drive(stock, asset, {1.0f}, fixedStep);
+        drive(aero, asset, {1.0f}, fixedStep);
+    }
+    if (aero.velocity.x >= stock.velocity.x - 1.0f || aero.suspension.heave >= stock.suspension.heave - 0.008f) {
+        throw std::runtime_error("Aero kit did not reduce top speed and load the suspension");
+    }
+
+    CarState diesel;
+    diesel.setup.diesel = true;
+    const DriveInput rev{1.0f, 0.0f, true};
+    for (int step = 0; step < 20; ++step) {
+        drive(diesel, asset, rev, fixedStep);
+        effects.update(asset, diesel, fixedStep);
+    }
+    const float initialBoost = diesel.boost;
+    if (diesel.soot <= 0.2f || effects.smokeCount() == 0 || initialBoost >= 0.4f) {
+        throw std::runtime_error("Diesel failed to roll coal before the turbo spooled");
+    }
+    for (int step = 0; step < 220; ++step) drive(diesel, asset, rev, fixedStep);
+    if (diesel.boost <= initialBoost + 0.35f) throw std::runtime_error("Diesel turbo failed to build boost under load");
+    const float speed = diesel.turboSpeed;
+    drive(diesel, asset, {}, fixedStep);
+    if (diesel.turboSpeed >= speed || diesel.turboSpeed <= speed * 0.8f) {
+        throw std::runtime_error("Diesel turbine failed to coast down");
+    }
+
+    effects.clear();
+    CarState gasoline;
+    gasoline.rpm = 4300.0f;
+    shiftGear(gasoline, 1);
+    for (int step = 0; step < 8; ++step) {
+        drive(gasoline, asset, {1.0f}, fixedStep);
+        effects.update(asset, gasoline, fixedStep);
+    }
+    if (effects.smokeCount() == 0) throw std::runtime_error("Gasoline shift failed to emit exhaust flame");
+    effects.clear();
+}
+
 void smokeTestGale(const CarAsset& asset, Renderer& renderer, TireEffects& effects, GLFWwindow* window)
 {
     // Equal axle loads isolate the torque split from the weight-dependent tire response.
@@ -460,7 +566,10 @@ void smokeTestCamp(const CarAsset& asset, Renderer& renderer, TireEffects& effec
         }
         const glm::vec3 plant = plants.front().root + glm::vec3(0.0f, 0.0f, campGrassTileSize);
         const glm::dvec2 point{plant.x, plant.z};
-        if (grass.surface(plant).grip >= 0.97f) throw std::runtime_error("Camp grass grew on the road");
+        if (grass.surface(plant).surface != GroundSurface::Dirt ||
+            grass.surface(grass.spawn()).surface != GroundSurface::Asphalt) {
+            throw std::runtime_error("Camp tire surfaces did not follow the road and grass");
+        }
         CarState trampler;
         const auto& tire = asset.hubs[0];
         trampler.position = plant - glm::vec3(tire.x + 0.45f, 0.0f, tire.z);
@@ -639,6 +748,7 @@ public:
             static_cast<float>(width) / displayWidth, static_cast<float>(height) / displayHeight);
         menu.update(controls, ui.fromScreen(cursor), dt);
         const bool startingFromMap = lastScreen == Screen::Maps;
+        const bool enteringGarage = menu.screen() == Screen::Garage && lastScreen != Screen::Garage;
         if (menu.screen() != lastScreen) {
             lastScreen = menu.screen();
             updateTitle();
@@ -658,6 +768,7 @@ public:
         const auto model = menu.displayedCar();
         const std::size_t i = static_cast<std::size_t>(model);
         const CarAsset& asset = sceneAsset(model, i);
+        if (enteringGarage) menu.setGarageAsset(asset);
         const DriveInput input = driving ? controls.drive() : DriveInput{};
         if (driving) {
             if (controls.justPressed(Action::Reset)) reset();
@@ -670,8 +781,8 @@ public:
             cameraInput.update(window.get(), camera, dt, look);
             accumulator += dt;
             while (accumulator >= fixedStep) {
-                drive(car, asset, input, fixedStep, view.camp);
-                effects.update(asset, car, fixedStep, view.camp);
+                drive(car, asset, input, fixedStep, view.camp, view.course);
+                effects.update(asset, car, fixedStep, view.camp, view.course);
                 if (view.camp) camp.trampleGrass(asset, car, fixedStep);
                 accumulator -= fixedStep;
             }
@@ -680,7 +791,7 @@ public:
             }
             camera.updateSpeed(glm::length(car.velocity), dt);
         }
-        audio.update(model, car, input, driving);
+        audio.update(model, car, driving);
 
         ChaseCamera orbit;
         orbit.yaw = 2.34f + 0.34f * std::sin(menu.time() * 0.66f);
@@ -689,7 +800,9 @@ public:
             titleDrift.update(asset, dt);
             renderers[i]->render(asset, titleDrift.car, titleDrift.camera(), titleDrift.effects, width, height, false, view);
         } else {
-            renderers[i]->render(asset, view.menu ? CarState{} : car, view.menu ? orbit : camera,
+            CarState preview;
+            preview.setup = menu.setup(model);
+            renderers[i]->render(asset, view.menu ? preview : car, view.menu ? orbit : camera,
                                  effects, width, height, !view.menu && night, view);
         }
         if (!view.menu) {
@@ -707,7 +820,7 @@ public:
 private:
     void updateTitle() const
     {
-        const std::array<const char*, 7> sections{"", "Main Menu", "Car Select", "Map Select", "Controls", "", "Paused"};
+        const std::array<const char*, 8> sections{"", "Main Menu", "Car Select", "Map Select", "Controls", "", "Paused", "Garage"};
         std::string title = sections[static_cast<std::size_t>(lastScreen)];
         if (lastScreen == Screen::Drive) {
             title = std::string(carSpec(menu.playerCar()).name) + " | " + std::string(courseName(menu.course()));
@@ -720,6 +833,7 @@ private:
     void reset()
     {
         car = {};
+        car.setup = menu.setup(menu.playerCar());
         if (menu.course() == Course::DerelictCamp) {
             camp = CampWorld(camp.seed());
             const auto model = menu.playerCar();
@@ -735,7 +849,7 @@ private:
     const CarAsset& sceneAsset(CarModel model, std::size_t i)
     {
         if (!renderers[i]) {
-            cars[i] = loadCar(assets / carSpec(model).assetFile, model);
+            cars[i] = loadGameCar(assets, model);
             renderers[i] = std::make_unique<Renderer>(cars[i], assets);
         }
         return cars[i];
@@ -763,7 +877,7 @@ private:
 
 void run(const std::filesystem::path& assets, CarModel model, bool smoke, bool campTest)
 {
-    CarAsset asset = loadCar(assets / carSpec(model).assetFile, model);
+    CarAsset asset = loadGameCar(assets, model);
 #ifdef __EMSCRIPTEN__
     glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2); // The browser port takes the WebGL version.
@@ -796,6 +910,7 @@ void run(const std::filesystem::path& assets, CarModel model, bool smoke, bool c
             return;
         }
         smokeTestHandling(asset);
+        smokeTestGarage(asset, effects);
         if (model == CarModel::Gale) {
             smokeTestGale(asset, renderer, effects, window.get());
         } else {
