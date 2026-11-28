@@ -812,9 +812,16 @@ Renderer::Renderer(const CarAsset& asset, const std::filesystem::path& assets)
     for (const MeshPart& part : asset.body) {
         body_.emplace_back(part);
     }
-    wheel_.reserve(asset.wheel.size());
+    wheel_.reserve(asset.wheel.size() + asset.brakeDisc.size());
     for (const MeshPart& part : asset.wheel) {
         wheel_.emplace_back(part);
+    }
+    for (const MeshPart& part : asset.brakeDisc) {
+        wheel_.emplace_back(part);
+    }
+    caliper_.reserve(asset.brakeCaliper.size());
+    for (const MeshPart& part : asset.brakeCaliper) {
+        caliper_.emplace_back(part);
     }
 
     const std::string materialCode = std::string(skyLighting) + shadowSamplingGlsl + vehicleLightingGlsl + materialFragment;
@@ -975,6 +982,8 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     }
     const glm::mat4 mirrored = glm::scale(bodyModel, glm::vec3(1.0f, 1.0f, -1.0f));
     std::array<glm::mat4, 4> wheelModels;
+    std::array<glm::mat4, 4> caliperModels;
+    const glm::mat4 mirrorAxle = glm::scale(identity, glm::vec3(1.0f, 1.0f, -1.0f));
     for (std::size_t i = 0; i < asset.hubs.size(); ++i) {
         glm::vec3 groundHub = asset.hubs[i];
         groundHub.y = asset.groundHeight + asset.wheelRadius;
@@ -984,6 +993,8 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
         const glm::mat4 roll = glm::rotate(identity, car.wheels[i].angle, axle);
         const glm::mat4 facing = i % 2 == 1 ? glm::rotate(identity, pi, up) : identity;
         wheelModels[i] = steering * roll * facing * asset.wheelTransform;
+        // Calipers follow suspension and steering. Mirroring keeps them on the same side of the axle.
+        caliperModels[i] = steering * (i % 2 == 1 ? mirrorAxle : identity) * asset.wheelTransform;
     }
     const auto drawOpaque = [&](auto&& drawPart) {
         for (const MeshBuffer& part : body_) {
@@ -994,9 +1005,12 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
                 }
             }
         }
-        for (const glm::mat4& wheelModel : wheelModels) {
+        for (std::size_t i = 0; i < wheelModels.size(); ++i) {
             for (const MeshBuffer& part : wheel_) {
-                drawPart(part, wheelModel);
+                drawPart(part, wheelModels[i]);
+            }
+            for (const MeshBuffer& part : caliper_) {
+                drawPart(part, caliperModels[i]);
             }
         }
     };

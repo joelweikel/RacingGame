@@ -84,6 +84,7 @@ private:
 
     std::vector<MeshBuffer> body_;
     std::vector<MeshBuffer> wheel_;
+    std::vector<MeshBuffer> caliper_;
     MeshBuffer ground_;
     std::filesystem::path assets_;
     std::unique_ptr<CampRender> camp_;

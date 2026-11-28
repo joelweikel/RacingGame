@@ -2,7 +2,9 @@
 
 A WIP multiplayer party racing game set in the MMORP universe. Planned targets are WebAssembly, Wii U, and native PC with advanced graphics.
 
-<img src="screenshots/slimrider.png" alt="SlimRider kicking up sand off Dustline Oval" width="49%"> <img src="screenshots/gale.png" alt="Gale's headlights and brake lights illuminating Derelict Camp at night" width="49%">
+![Dark-blue Gale on Dustline Oval with the front splitter and rear wing equipped](screenshots/gale.png)
+
+<img src="screenshots/slimrider.png" alt="SlimRider kicking up sand off Dustline Oval" width="49%">
 
 ## Garage
 
@@ -10,7 +12,7 @@ Choose either car under **Play** to open its garage. Adjust the RGB sliders with
 
 Drag the preview or use the look controls to orbit the car. The default look controls are the right stick or **I**, **J**, **K**, and **L**.
 
-![SlimRider in the garage with custom paint and equipped add-ons](screenshots/ui/garage.png)
+![Dark-blue Gale in the garage with the splitter and rear wing on and the hood intake off](screenshots/ui/garage.png)
 
 Hold the service brake and throttle to rev while parked. In Derelict Camp, aim a nearby exhaust outlet at the grass to see it bend. Gasoline cars spit flames on high-RPM shifts under throttle. Floor the diesel from low boost to roll coal, and watch the boost gauge as the turbo spools.
 

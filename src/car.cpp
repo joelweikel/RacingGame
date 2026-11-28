@@ -96,10 +96,10 @@ const cgltf_node& meshNode(const cgltf_data& data, std::string_view name)
     throw std::runtime_error("Missing mesh node: " + std::string(name));
 }
 
-const cgltf_node* galeWheelNode(const cgltf_data& data)
+const cgltf_node* wheelNode(const cgltf_data& data, const char* name)
 {
-    if (const auto* assembly = namedNode(data, "GaleWheel", false)) return assembly;
-    return namedNode(data, "GaleWheel", true);
+    if (const auto* assembly = namedNode(data, name, false)) return assembly;
+    return namedNode(data, name, true);
 }
 
 glm::mat4 nodeTransform(const cgltf_node& node)
@@ -398,9 +398,8 @@ CarAsset readCar(const cgltf_data& data, CarModel model)
     const cgltf_node* galeBody = isGale ? exactNode(data, "Body.001", true) : nullptr;
     const bool combinedGale = galeBody && exactNode(data, "Body", true);
     const cgltf_node& body = galeBody ? *galeBody : meshNode(data, "Body");
-    const cgltf_node* galeWheel = galeWheelNode(data);
-    const bool faceMounted = galeWheel || exactNode(data, "Exhaust", false);
-    const cgltf_node* wheel = isGale ? galeWheel : nullptr;
+    const cgltf_node* wheel = wheelNode(data, isGale ? "GaleWheel" : "SlimRiderWheel");
+    const bool faceMounted = wheel || wheelNode(data, "GaleWheel") || exactNode(data, "Exhaust", false);
     if (!wheel && isGale) wheel = exactNode(data, "SimpleWheel.001", true);
     if (!wheel) wheel = &meshNode(data, "SimpleWheel");
     const glm::vec3 authoredFront = findHub(data, "FL", "FrontLeftWheel", combinedGale);
@@ -428,6 +427,21 @@ CarAsset readCar(const cgltf_data& data, CarModel model)
         // Blender +Y exports as -Z. Rotate the face toward the left-side socket.
         const glm::mat4 facing = glm::scale(scale, glm::vec3(-1.0f, 1.0f, -1.0f));
         appendParts(*wheel, facing, car.wheel);
+        const auto* disc = namedNode(data, "MedDisc", true);
+        const auto* caliper = namedNode(data, "MedCaliper", true);
+        if (disc) {
+            appendParts(*disc, facing, car.brakeDisc);
+            if (!caliper) {
+                // This combined export retained the caliper's original Blender object name.
+                const auto* cube = exactNode(data, "Cube", true);
+                if (cube && !cube->parent && cube->mesh->name &&
+                    std::string_view(cube->mesh->name) == "Cube.021") caliper = cube;
+            }
+        }
+        if (caliper) {
+            appendParts(*caliper, facing, car.brakeCaliper);
+            for (auto& part : car.brakeCaliper) part.surface.paint = false;
+        }
         float inner = std::numeric_limits<float>::infinity();
         float outer = -inner;
         for (const auto& part : car.wheel) {
@@ -580,7 +594,7 @@ CarAsset loadGameCar(const std::filesystem::path& assets, CarModel model)
     if (model == CarModel::SlimRider && std::filesystem::is_regular_file(galePath)) {
         const GltfFile combined(galePath);
         if (exactNode(*combined.data, "Body", true) && exactNode(*combined.data, "Body.001", true) &&
-            galeWheelNode(*combined.data)) {
+            (wheelNode(*combined.data, "SlimRiderWheel") || wheelNode(*combined.data, "GaleWheel"))) {
             return readCar(*combined.data, model);
         }
     }

@@ -81,6 +81,8 @@ struct CarSpec {
 struct CarAsset {
     std::vector<MeshPart> body;
     std::vector<MeshPart> wheel;
+    std::vector<MeshPart> brakeDisc;
+    std::vector<MeshPart> brakeCaliper;
     glm::mat4 wheelTransform{1.0f};
     struct Exhaust {
         glm::vec3 position;
