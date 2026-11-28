@@ -4,7 +4,9 @@
 
 #include "driving.hpp"
 #include "lighting.hpp"
+#include "scenery_quality.hpp"
 #include "tire_effects.hpp"
+#include "vehicle_lights.hpp"
 
 #include "graphics.hpp"
 
@@ -15,6 +17,7 @@ struct ChaseCamera {
     float speedEffect = 0.0f;
     float vibrationPhase = 0.0f;
 
+    void orbit(const glm::vec2& delta);
     void update(const glm::vec2& mouseDelta, bool looking, float dt);
     void updateSpeed(float metersPerSecond, float dt);
 };
@@ -38,6 +41,7 @@ public:
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
 
+    void setGraphics(const GraphicsSettings& graphics);
     void render(const CarAsset& asset, const CarState& car, const ChaseCamera& camera,
                 TireEffects& effects, int width, int height, bool night = false, const SceneView& scene = {});
 
@@ -83,7 +87,9 @@ private:
     MeshBuffer ground_;
     std::filesystem::path assets_;
     std::unique_ptr<CampRender> camp_;
-    SunShadow shadow_;
+    GraphicsSettings graphics_;
+    SceneryQuality quality_;
+    std::unique_ptr<SunShadow> shadow_;
     PostProcess post_;
     GLuint program_ = 0;
     GLuint skyProgram_ = 0;
@@ -96,6 +102,10 @@ private:
     GLint viewProjection_ = -1;
     GLint color_ = -1;
     GLint paint_ = -1;
+    GLint receivesVehicleLights_ = -1;
+    GLint sceneReflections_ = -1;
+    GLint reflectionLogRange_ = -1;
+    VehicleLightUniforms vehicleLights_;
     GLint groundHeight_ = -1;
     GLint surface_ = -1;
     GLint emissive_ = -1;

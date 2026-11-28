@@ -54,7 +54,9 @@ void main() {
     float lit = sceneShadow(rootHeight.xyz + vec3(0, 0.2, 0), 0.0015, 0);
     vec3 green = mix(vec3(0.105, 0.29, 0.069), vec3(0.29, 0.44, 0.115), shape.z);
     float brightness = (0.54 + 0.56 * tip) * (0.63 + 0.37 * lit);
+    vec3 localLight = vehicleLighting(rootHeight.xyz + vec3(0.0, height * 0.5, 0.0), vec3(0, 1, 0));
     bladeColor = green * brightness * (uNight ? vec3(0.32, 0.47, 0.64) : vec3(0.84, 0.94, 0.88));
+    bladeColor += green * (0.30 + 0.56 * tip) * localLight;
 }
 )glsl";
 
@@ -99,7 +101,7 @@ glm::dvec2 tileOrigin(const CampTile& key)
 
 GrassRenderer::GrassRenderer(const SceneryQuality& quality) : quality_(quality)
 {
-    const std::string vertex = std::string(shadowSamplingGlsl) + grassVertex;
+    const std::string vertex = std::string(shadowSamplingGlsl) + vehicleLightingGlsl + grassVertex;
     program_ = createShaderProgram(vertex.c_str(), grassFragment);
     viewProjection_ = glGetUniformLocation(program_, "uViewProjection");
     wind_ = glGetUniformLocation(program_, "uWind");
@@ -108,6 +110,7 @@ GrassRenderer::GrassRenderer(const SceneryQuality& quality) : quality_(quality)
     jetDirections_ = glGetUniformLocation(program_, "uJetDirections[0]");
     jetCount_ = glGetUniformLocation(program_, "uJetCount");
     shadows_.initialize(program_, 0);
+    vehicleLights_.initialize(program_);
 
     for (std::size_t i = 0; i < batches_.size(); ++i) {
         auto& batch = batches_[i];
@@ -214,11 +217,12 @@ void GrassRenderer::update(const CampWorld& world, const glm::vec3& player)
 }
 
 void GrassRenderer::draw(const glm::mat4& viewProjection, const SceneShadows& shadows,
-                         glm::dvec2 origin, float time, bool night, const std::vector<CarAsset::Exhaust>& outlets,
+                         const VehicleLights& lights, glm::dvec2 origin, float time, bool night, const std::vector<CarAsset::Exhaust>& outlets,
                          const glm::mat4& body, float exhaustFlow) const
 {
     glUseProgram(program_);
     shadows_.bind(shadows);
+    vehicleLights_.bind(lights);
     glUniformMatrix4fv(viewProjection_, 1, GL_FALSE, glm::value_ptr(viewProjection));
     constexpr double tau = 6.283185307179586;
     glUniform1f(wind_, static_cast<float>(std::remainder(origin.x * 0.25 + origin.y * 0.19 + time * 1.56, tau)));

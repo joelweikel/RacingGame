@@ -2,6 +2,18 @@
 
 #include <array>
 
+enum class QualityLevel { Automatic, Low, Medium, High };
+
+struct GraphicsSettings {
+    QualityLevel preset = QualityLevel::Automatic;
+    QualityLevel lod = QualityLevel::Automatic;
+    int renderScale = 2;
+    bool bloom = true;
+    bool reflections = true;
+
+    float resolutionScale() const { return std::array{0.67f, 0.85f, 1.0f}[renderScale]; }
+};
+
 struct SceneryQuality {
     int nearestTreeLod;
     float nearTreePixels;
@@ -19,4 +31,5 @@ struct SceneryQuality {
     float distantShadowExtent;
 };
 
-const SceneryQuality& sceneryQuality();
+SceneryQuality sceneryQuality(QualityLevel preset = QualityLevel::Automatic,
+                              QualityLevel lod = QualityLevel::Automatic);

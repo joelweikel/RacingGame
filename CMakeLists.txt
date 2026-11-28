@@ -45,13 +45,14 @@ set(ui_assets
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/Spectral-OFL.txt")
 set(audio_credits "${CMAKE_CURRENT_SOURCE_DIR}/assets/audio-credits.txt")
 set(audio_assets
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-1230.wav"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/diesel-idle.wav"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-2977.wav"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-4438.wav"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-6040.wav"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/gale-7252.wav"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/tire-squeal.wav")
-set(game_assets "${car_asset}" ${gale_asset} ${camp_assets} ${ui_assets} ${audio_assets})
+set(game_assets "${car_asset}" ${gale_asset} ${camp_assets} ${ui_assets} ${audio_assets} "${audio_credits}")
 if(EMSCRIPTEN)
     set(web_shell "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html")
     set_target_properties(RacingGame PROPERTIES OUTPUT_NAME index SUFFIX ".html")
@@ -64,7 +65,7 @@ if(EMSCRIPTEN)
         get_filename_component(asset_name "${asset}" NAME)
         target_link_options(RacingGame PRIVATE "SHELL:--preload-file \"${asset}@/assets/${asset_name}\"")
     endforeach()
-    set_property(TARGET RacingGame APPEND PROPERTY LINK_DEPENDS "${web_shell}" "${audio_credits}" ${game_assets})
+    set_property(TARGET RacingGame APPEND PROPERTY LINK_DEPENDS "${web_shell}" ${game_assets})
     add_custom_command(TARGET RacingGame POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${audio_credits}" "$<TARGET_FILE_DIR:RacingGame>/audio-credits.txt"
         VERBATIM)
@@ -83,8 +84,8 @@ endif()
 set(asset_output "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/assets")
 add_custom_target(racing_assets
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${asset_output}"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${game_assets} "${audio_credits}" "${asset_output}"
-    DEPENDS ${game_assets} "${audio_credits}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${game_assets} "${asset_output}"
+    DEPENDS ${game_assets}
     VERBATIM)
 add_dependencies(RacingGame racing_assets)
 

@@ -15,7 +15,7 @@ struct Vertex {
     glm::vec2 uv{0.0f};
 };
 
-enum class LightControl { Always, Night, Brake };
+enum class LightControl { Always, Headlamp, Night, Brake };
 enum class CarPart { Always, HoodIntake, Wing, Splitter, Gasoline, Diesel };
 
 struct CarSetup {
@@ -90,6 +90,8 @@ struct CarAsset {
     std::vector<Exhaust> dieselExhaust;
     // Front left, front right, rear left, rear right.
     std::array<glm::vec3, 4> hubs{};
+    std::array<glm::vec3, 2> headlights{};
+    std::array<glm::vec3, 2> taillights{};
     float wheelRadius = 0.0f;
     float wheelHalfWidth = 0.0f;
     float groundHeight = 0.0f;

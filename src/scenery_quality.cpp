@@ -96,14 +96,43 @@ const SceneryQuality& detectWindowsQuality()
 
 } // namespace
 
-const SceneryQuality& sceneryQuality()
+SceneryQuality sceneryQuality(QualityLevel preset, QualityLevel lod)
 {
 #ifdef __EMSCRIPTEN__
-    return web;
+    const auto& automatic = web;
+    const auto& lowPreset = web;
 #elif defined(_WIN32)
-    static const SceneryQuality& quality = detectWindowsQuality();
-    return quality;
+    static const auto& automatic = detectWindowsQuality();
+    const auto& lowPreset = low;
 #else
-    return medium;
+    const auto& automatic = medium;
+    const auto& lowPreset = low;
 #endif
+    const auto profile = [&](QualityLevel level) -> const SceneryQuality& {
+        switch (level) {
+        case QualityLevel::Low: return lowPreset;
+        case QualityLevel::Medium: return medium;
+        case QualityLevel::High: return high;
+        case QualityLevel::Automatic: return automatic;
+        }
+        return automatic;
+    };
+    auto quality = profile(preset);
+    if (lod != QualityLevel::Automatic) {
+        const auto& scenery = profile(lod);
+        quality.nearestTreeLod = scenery.nearestTreeLod;
+        quality.nearTreePixels = scenery.nearTreePixels;
+        quality.midTreePixels = scenery.midTreePixels;
+        quality.minTreePixels = scenery.minTreePixels;
+        quality.propDistance = scenery.propDistance;
+        quality.viewDistance = scenery.viewDistance;
+        quality.grassDistances = scenery.grassDistances;
+        quality.detailedGrassRadius = scenery.detailedGrassRadius;
+        quality.grassSamples = scenery.grassSamples;
+    }
+#ifdef __EMSCRIPTEN__
+    quality.nearestTreeLod = 1;
+    quality.nearTreePixels = 0.0f;
+#endif
+    return quality;
 }

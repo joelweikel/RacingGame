@@ -18,6 +18,12 @@ EM_JS(void, readGaragePreferences, (char* out, int capacity), {
 EM_JS(void, writeGaragePreferences, (const char* data), {
     try { localStorage.setItem("racinggame.garage.v1", UTF8ToString(data)); } catch (_) {}
 });
+EM_JS(void, readGraphicsPreferences, (char* out, int capacity), {
+    try { stringToUTF8(localStorage.getItem("racinggame.graphics.v1") || "", out, capacity); } catch (_) {}
+});
+EM_JS(void, writeGraphicsPreferences, (const char* data), {
+    try { localStorage.setItem("racinggame.graphics.v1", UTF8ToString(data)); } catch (_) {}
+});
 #endif
 
 namespace {
@@ -35,12 +41,24 @@ constexpr glm::vec4 shadow{0.018f, 0.025f, 0.034f, 0.19f};
 constexpr float pi = 3.141592654f;
 constexpr auto italic = UiFont::Display;
 constexpr UiBox backButton{1088, 39, 112, 38};
-constexpr UiBox padTab{72, 168, 205, 40};
-constexpr UiBox keysTab{285, 168, 211, 40};
-constexpr UiBox defaultsButton{72, 626, 169, 38};
+constexpr UiBox padTab{96, 232, 138, 36};
+constexpr UiBox keysTab{242, 232, 138, 36};
+constexpr UiBox defaultsButton{96, 624, 164, 35};
+constexpr UiBox settingsPanel{72, 211, 1128, 465};
+constexpr std::array settingsTabs{"Controls", "Graphics", "Credits"};
+constexpr std::array qualityLabels{"Automatic", "Low", "Medium", "High"};
+constexpr std::array scaleLabels{"67%", "85%", "100%"};
+constexpr int graphicsRows = 5;
+constexpr int bindingRows = actionCount / 2;
+
+UiBox settingsTabBox(int i) { return {72.0f + i * 166.0f, 152, 156, 41}; }
+UiBox bindingBox(int i) { return {96.0f + (i / bindingRows) * 552.0f, 285.0f + (i % bindingRows) * 41.0f, 528, 36}; }
+UiBox graphicsBox(int i) { return {96, 231.0f + i * 76.0f, 1080, 66}; }
+UiBox creditBox(int i) { return {96, 240.0f + i * 55.0f, 324, 44}; }
 constexpr UiBox goButton{842, 560, 358, 70};
 constexpr std::array courses{Course::TestGrid, Course::DustlineOval, Course::DerelictCamp};
 constexpr UiBox startButton{72, 488, 340, 72};
+constexpr UiBox garagePreview{550, 145, 665, 400};
 constexpr int garageContinue = 7;
 constexpr std::array garageLabels{"Red", "Green", "Blue", "Hood intake", "Splitter", "Rear wing", "Engine"};
 constexpr std::array garageParts{CarPart::HoodIntake, CarPart::Splitter, CarPart::Wing, CarPart::Diesel};
@@ -277,62 +295,6 @@ void driveSplit(UiDraw& ui, const CarSpec& spec)
     }
 }
 
-void controllerDiagram(UiDraw& ui, std::string_view active)
-{
-    // Top sticks, lower D-pad and face buttons match the Wii U Pro Controller layout.
-    constexpr std::array<glm::vec2, 20> shell{{
-        {735, 306}, {755, 272}, {812, 252}, {1036, 252}, {1095, 268},
-        {1127, 303}, {1147, 391}, {1147, 453}, {1120, 490}, {1083, 478},
-        {1044, 423}, {1007, 405}, {855, 405}, {824, 426}, {795, 480},
-        {752, 488}, {724, 456}, {723, 407}, {727, 366}, {731, 332}
-    }};
-    std::vector<glm::vec2> outline;
-    for (std::size_t i = 0; i < shell.size(); ++i) {
-        const auto a = shell[(i + shell.size() - 1) % shell.size()], b = shell[i];
-        const auto c = shell[(i + 1) % shell.size()], d = shell[(i + 2) % shell.size()];
-        for (int j = 0; j < 6; ++j) {
-            const float t = j / 6.0f;
-            outline.push_back(0.5f * (2.0f * b + t * (-a + c + t * (2.0f*a - 5.0f*b + 4.0f*c - d +
-                               t * (-a + 3.0f*b - 3.0f*c + d)))));
-        }
-    }
-    for (std::size_t i = 0; i < outline.size(); ++i) {
-        const auto a = outline[i], b = outline[(i + 1) % outline.size()];
-        ui.poly({{935, 355}, a, b}, ink);
-        ui.line(a, b, 2.5f, rim);
-    }
-    const auto padButton = [&](std::string_view label, glm::vec2 at, float r) {
-        const bool highlighted = label == active;
-        ui.circle(at, r + 2, highlighted ? uiAccentBlue : rim);
-        ui.circle(at, r, highlighted ? deepBlue : dark);
-        centered(ui, label, at, r > 13 ? 16.0f : 12.0f, white);
-    };
-    const auto stick = [&](glm::vec2 at, bool left) {
-        const bool hot = active.rfind(left ? "L Stick" : "R Stick", 0) == 0;
-        ui.circle(at, 33, hot ? uiAccentBlue : rim);
-        ui.circle(at, 30, ink);
-        ui.circle(at, 22, hot ? deepBlue : dark);
-        ui.arc(at, {16, 16}, 0, 2 * pi, 1, hot ? white : muted);
-    };
-    stick({823, 300}, true);
-    stick({1042, 300}, false);
-    const auto dp = active.rfind("D-Pad", 0) == 0 ? uiAccentBlue : pale;
-    ui.rounded({799, 354, 49, 16}, 4, dp);
-    ui.rounded({816, 337, 16, 49}, 4, dp);
-    ui.circle({824, 362}, 4, dark);
-    padButton("X", {1042, 343}, 12);
-    padButton("A", {1063, 364}, 12);
-    padButton("B", {1042, 385}, 12);
-    padButton("Y", {1021, 364}, 12);
-    padButton("-", {901, 328}, 9);
-    padButton("+", {966, 328}, 9);
-    padButton("H", {934, 351}, 12);
-    stamp(ui, "L", {766, 245, 54, 22}, active == "L");
-    stamp(ui, "ZL", {822, 241, 50, 22}, active == "ZL");
-    stamp(ui, "ZR", {990, 241, 50, 22}, active == "ZR");
-    stamp(ui, "R", {1043, 245, 54, 22}, active == "R");
-}
-
 void drawCourse(UiDraw& ui, Course course, float time)
 {
     const bool oval = course == Course::DustlineOval;
@@ -411,15 +373,44 @@ std::string_view courseName(Course course)
     }
 }
 
-Menu::Menu(CarModel initialModel, bool hasGale) : selectedCar_(initialModel), hasGale_(hasGale)
+Menu::Menu(CarModel initialModel, bool hasGale, const std::filesystem::path& assets)
+    : selectedCar_(initialModel), hasGale_(hasGale)
 {
+    std::ifstream creditFile(assets / "audio-credits.txt");
+    std::string line;
+    std::getline(creditFile, line); // File title.
+    bool newSection = true;
+    while (std::getline(creditFile, line)) {
+        const auto first = line.find_first_not_of(" \r\t");
+        if (first == std::string::npos) {
+            newSection = true;
+            continue;
+        }
+        if (newSection) credits_.emplace_back();
+        newSection = false;
+        credits_.back().push_back(line.substr(first, line.find_last_not_of(" \r\t") - first + 1));
+    }
 #ifdef __EMSCRIPTEN__
+    char graphicsData[64]{};
+    readGraphicsPreferences(graphicsData, sizeof(graphicsData));
+    std::istringstream graphicsFile(graphicsData);
     char data[128]{};
     readGaragePreferences(data, sizeof(data));
     std::istringstream file(data);
 #else
+    std::ifstream graphicsFile(preferencesPath("graphics.cfg", "racing-graphics.cfg"));
     std::ifstream file(preferencesPath("garage.cfg", "racing-garage.cfg"));
 #endif
+    int preset = 0, lod = 0, scale = 0;
+    bool bloom = true;
+    if (graphicsFile >> preset >> lod >> scale >> bloom &&
+        preset >= 0 && preset < static_cast<int>(qualityLabels.size()) &&
+        lod >= 0 && lod < static_cast<int>(qualityLabels.size()) &&
+        scale >= 0 && scale < static_cast<int>(scaleLabels.size())) {
+        graphics_ = {static_cast<QualityLevel>(preset), static_cast<QualityLevel>(lod), scale, bloom};
+        bool reflections = true;
+        if (graphicsFile >> reflections) graphics_.reflections = reflections;
+    }
     for (auto& config : setups_) {
         CarSetup loaded;
         if (!(file >> loaded.paint.r >> loaded.paint.g >> loaded.paint.b >>
@@ -428,6 +419,22 @@ Menu::Menu(CarModel initialModel, bool hasGale) : selectedCar_(initialModel), ha
             (glm::all(glm::greaterThanEqual(loaded.paint, glm::ivec3(0))) &&
              glm::all(glm::lessThanEqual(loaded.paint, glm::ivec3(255))))) config = loaded;
     }
+}
+
+void Menu::saveGraphics() const
+{
+    std::ostringstream values;
+    values << static_cast<int>(graphics_.preset) << ' ' << static_cast<int>(graphics_.lod) << ' '
+           << graphics_.renderScale << ' ' << graphics_.bloom << ' ' << graphics_.reflections;
+#ifdef __EMSCRIPTEN__
+    writeGraphicsPreferences(values.str().c_str());
+#else
+    const auto path = preferencesPath("graphics.cfg", "racing-graphics.cfg");
+    std::error_code error;
+    if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), error);
+    std::ofstream file(path);
+    file << values.str();
+#endif
 }
 
 void Menu::saveGarage() const
@@ -455,13 +462,10 @@ int Menu::count() const
     case Screen::Cars: return hasGale_ ? 2 : 1;
     case Screen::Garage: return garageContinue + 1;
     case Screen::Maps: return static_cast<int>(courses.size());
-    case Screen::Settings: return actionCount;
     case Screen::Pause: return 4;
     default: return 0;
     }
 }
-
-int Menu::firstBinding() const { return std::clamp(focus_ - 4, 0, actionCount - 8); }
 
 UiBox Menu::option(int index) const
 {
@@ -471,7 +475,6 @@ UiBox Menu::option(int index) const
     case Screen::Garage:
         return index == garageContinue ? UiBox{72, 568, 456, 63} : UiBox{82, 210.0f + index * 47.0f, 436, 41};
     case Screen::Maps: return {72, 201.0f + index * 82.0f, 456, 73};
-    case Screen::Settings: return {82, 226.0f + (index - firstBinding()) * 46.0f, 414, 39};
     case Screen::Pause: return {424, 232.0f + index * 74.0f, 432, 60};
     default: return {};
     }
@@ -485,8 +488,9 @@ void Menu::open(Screen next)
     capture_ = -1;
     focus_ = next == Screen::Cars && hasGale_ ? (selectedCar_ == CarModel::Gale ? 0 : 1) :
              next == Screen::Maps ? static_cast<int>(std::find(courses.begin(), courses.end(), course_) - courses.begin()) :
-             next == Screen::Garage ? garageContinue : 0;
+             next == Screen::Garage ? garageContinue : next == Screen::Settings ? -1 : 0;
     dragPaint_ = -1;
+    orbitDragging_ = false;
     paintRepeat_ = 0.0f;
 }
 
@@ -550,26 +554,27 @@ void Menu::update(Controls& controls, glm::vec2 cursor, float dt)
     }
 
     if (screen_ == Screen::Settings) {
-        if (input.left || input.right || (input.click && (padTab.contains(cursor) || keysTab.contains(cursor)))) {
-            controllerBindings_ = input.click ? padTab.contains(cursor) : !controllerBindings_;
-            return;
-        }
-        if (input.reset || (input.click && defaultsButton.contains(cursor))) {
-            controls.resetBindings(controllerBindings_);
+        updateSettings(controls, cursor);
+        return;
+    }
+    if (screen_ == Screen::Garage) {
+        garageCamera_.orbit(controls.look() * (320.0f * dt));
+        orbitDragging_ = input.mouseHeld && (orbitDragging_ || (input.click && garagePreview.contains(cursor)));
+        if (orbitDragging_) {
+            if (!input.click) garageCamera_.orbit(cursor - orbitCursor_);
+            orbitCursor_ = cursor;
             return;
         }
     }
     const int size = count();
-    const bool sidewaysNavigation = screen_ != Screen::Settings && screen_ != Screen::Garage;
+    const bool sidewaysNavigation = screen_ != Screen::Garage;
     const int move = static_cast<int>(input.down || (sidewaysNavigation && input.right)) -
                      static_cast<int>(input.up || (sidewaysNavigation && input.left));
     if (move != 0 && size > 0) focus_ = (focus_ + move + size) % size;
 
     bool activated = input.confirm;
-    if (input.click || (input.mouseMoved && screen_ != Screen::Settings)) {
-        const int first = screen_ == Screen::Settings ? firstBinding() : 0;
-        const int last = screen_ == Screen::Settings ? first + 8 : size;
-        for (int i = first; i < last; ++i) {
+    if (input.click || input.mouseMoved) {
+        for (int i = 0; i < size; ++i) {
             if (option(i).contains(cursor)) {
                 focus_ = i;
                 activated |= input.click && screen_ != Screen::Maps;
@@ -593,7 +598,6 @@ void Menu::update(Controls& controls, glm::vec2 cursor, float dt)
     case Screen::Cars: open(Screen::Garage); break;
     case Screen::Garage: open(Screen::Maps); break;
     case Screen::Maps: transition(Screen::Drive, goButton.center()); break;
-    case Screen::Settings: capture_ = focus_; cancelHeld_ = 0.0f; break;
     case Screen::Pause:
         if (focus_ == 0) open(Screen::Drive);
         if (focus_ == 1) { startingRace_ = true; open(Screen::Drive); }
@@ -601,6 +605,198 @@ void Menu::update(Controls& controls, glm::vec2 cursor, float dt)
         if (focus_ == 3) open(Screen::Main);
         break;
     default: break;
+    }
+}
+
+void Menu::updateSettings(Controls& controls, glm::vec2 cursor)
+{
+    const auto& input = controls.menu();
+    const int horizontal = static_cast<int>(input.right) - static_cast<int>(input.left);
+    const int vertical = static_cast<int>(input.down) - static_cast<int>(input.up);
+    const auto cycle = [](int value, int step, int size) { return (value + step + size) % size; };
+    if (input.click) {
+        for (int i = 0; i < static_cast<int>(settingsTabs.size()); ++i) {
+            if (settingsTabBox(i).contains(cursor)) {
+                settingsTab_ = static_cast<SettingsTab>(i);
+                focus_ = -1;
+                return;
+            }
+        }
+    }
+    if (focus_ < 0 && horizontal != 0) {
+        settingsTab_ = static_cast<SettingsTab>(cycle(static_cast<int>(settingsTab_), horizontal, settingsTabs.size()));
+        return;
+    }
+    if (focus_ < 0 && (input.down || input.confirm)) {
+        if (settingsTab_ == SettingsTab::Credits) {
+            if (!credits_.empty()) focus_ = creditPage_;
+        } else {
+            focus_ = 0;
+        }
+        return;
+    }
+
+    if (settingsTab_ == SettingsTab::Controls) {
+        if (input.click && (padTab.contains(cursor) || keysTab.contains(cursor))) {
+            controllerBindings_ = padTab.contains(cursor);
+            focus_ = 0;
+            return;
+        }
+        constexpr int reset = actionCount + 1;
+        if (input.reset || (input.click && defaultsButton.contains(cursor)) || (focus_ == reset && input.confirm)) {
+            controls.resetBindings(controllerBindings_);
+            return;
+        }
+        if (focus_ == 0 && (horizontal || input.confirm)) {
+            controllerBindings_ = !controllerBindings_;
+            return;
+        }
+        if (focus_ > 0 && focus_ < reset && horizontal) {
+            if (horizontal > 0 && focus_ <= bindingRows) focus_ += bindingRows;
+            if (horizontal < 0 && focus_ > bindingRows) focus_ -= bindingRows;
+        }
+        if (vertical && focus_ >= 0) {
+            if (vertical < 0 && focus_ == bindingRows + 1) focus_ = 0;
+            else if (vertical > 0 && focus_ == bindingRows) focus_ = reset;
+            else focus_ = std::clamp(focus_ + vertical, -1, reset);
+        }
+        if (input.click) {
+            for (int i = 0; i < actionCount; ++i) {
+                if (!bindingBox(i).contains(cursor)) continue;
+                focus_ = i + 1;
+                capture_ = i;
+                break;
+            }
+        } else if (input.confirm && focus_ > 0 && focus_ < reset) {
+            capture_ = focus_ - 1;
+        }
+        if (capture_ >= 0) cancelHeld_ = 0.0f;
+        return;
+    }
+
+    if (settingsTab_ == SettingsTab::Graphics) {
+        if (input.reset || (input.click && defaultsButton.contains(cursor)) ||
+            (focus_ == graphicsRows && input.confirm)) {
+            graphics_ = {};
+            saveGraphics();
+            return;
+        }
+        if (vertical && focus_ >= 0) focus_ = std::clamp(focus_ + vertical, -1, graphicsRows);
+        int step = horizontal ? horizontal : static_cast<int>(input.confirm);
+        if (input.click) {
+            step = 0;
+            for (int i = 0; i < graphicsRows; ++i) {
+                if (!graphicsBox(i).contains(cursor)) continue;
+                focus_ = i;
+                step = cursor.x >= 908 && cursor.x < 962 ? -1 : 1;
+                break;
+            }
+        }
+        if (!step || focus_ < 0 || focus_ >= graphicsRows) return;
+        if (focus_ == 0) {
+            graphics_.preset = static_cast<QualityLevel>(cycle(static_cast<int>(graphics_.preset), step, qualityLabels.size()));
+        } else if (focus_ == 1) {
+            graphics_.lod = static_cast<QualityLevel>(cycle(static_cast<int>(graphics_.lod), step, qualityLabels.size()));
+        } else if (focus_ == 2) {
+            graphics_.renderScale = cycle(graphics_.renderScale, step, scaleLabels.size());
+        } else if (focus_ == 3) {
+            graphics_.bloom = !graphics_.bloom;
+        } else {
+            graphics_.reflections = !graphics_.reflections;
+        }
+        saveGraphics();
+        return;
+    }
+
+    if (credits_.empty()) return;
+    const int last = static_cast<int>(credits_.size()) - 1;
+    if (focus_ >= 0 && (vertical || horizontal)) focus_ = std::clamp(focus_ + vertical + horizontal, -1, last);
+    if (input.click) {
+        for (int i = 0; i <= last; ++i) {
+            if (creditBox(i).contains(cursor)) focus_ = i;
+        }
+    }
+    if (focus_ >= 0) creditPage_ = focus_;
+}
+
+void Menu::drawSettings(UiDraw& ui, const Controls& controls) const
+{
+    const bool pad = controls.usingGamepad();
+    ui.text("Settings", {69, 67}, 72, ink, italic);
+    for (int i = 0; i < static_cast<int>(settingsTabs.size()); ++i) {
+        stamp(ui, settingsTabs[i], settingsTabBox(i), static_cast<int>(settingsTab_) == i);
+    }
+    if (focus_ < 0) {
+        const auto box = settingsTabBox(static_cast<int>(settingsTab_));
+        ui.rounded({box.x + 12, box.y + box.h - 5, box.w - 24, 2}, 1.0f, white);
+        keyHint(ui, {592, 161}, pad ? "D-pad" : "Left / Right", "Switch tabs");
+    }
+    panel(ui, settingsPanel, 17);
+    const auto drawRow = [&](UiBox row, bool focused) {
+        ui.roundedGradient(row, 8, focused ? glm::vec4(0.09f, 0.16f, 0.27f, 1.0f) : dark, ink);
+        if (focused) ui.rounded({row.x + 2, row.y + 7, 3, row.h - 14}, 1.5f, uiAccentBlue);
+    };
+
+    if (settingsTab_ == SettingsTab::Controls) {
+        stamp(ui, "Gamepad", padTab, controllerBindings_);
+        stamp(ui, "Keyboard", keysTab, !controllerBindings_);
+        if (focus_ == 0) {
+            const UiBox profile = controllerBindings_ ? padTab : keysTab;
+            ui.line({profile.x + 11, 272}, {profile.x + profile.w - 11, 272}, 2, uiAccentBlue);
+        }
+        for (int i = 0; i < actionCount; ++i) {
+            const UiBox row = bindingBox(i);
+            const bool focused = focus_ == i + 1;
+            drawRow(row, focused);
+            ui.text(actionLabels[i], {row.x + 14, row.y + 6}, 21, focused ? white : muted);
+            const auto binding = capture_ == i ? (controllerBindings_ ? "Move or press a control" : "Press a key")
+                                               : controls.binding(i, controllerBindings_);
+            const float width = ui.measure(binding, 17) + 22;
+            stamp(ui, binding, {row.x + row.w - width - 8, row.y + 5, width, 26}, focused);
+        }
+        stamp(ui, "Reset defaults", defaultsButton, focus_ == actionCount + 1);
+        if (capture_ >= 0) {
+            ui.text(controllerBindings_ ? "Hold B to cancel" : "Select Cancel to close", {284, 630}, 21, muted);
+        } else {
+            ui.text(pad ? "A to rebind" : "Enter to rebind", {284, 630}, 21, muted);
+        }
+    } else if (settingsTab_ == SettingsTab::Graphics) {
+        constexpr std::array titles{"Graphics preset", "Scenery LOD", "Render scale", "Bloom", "Track reflections"};
+        constexpr std::array details{"Sets shadow quality, fog detail, and default scenery levels.",
+            "Controls tree detail, grass density, and draw distance in Derelict Camp.",
+            "Changes 3D resolution. Menus and HUD stay sharp.", "Adds a glow around bright lights.",
+            "Reflects nearby track scenery in the car's clear coat."};
+        const std::array values{qualityLabels[static_cast<int>(graphics_.preset)],
+            graphics_.lod == QualityLevel::Automatic ? "Match preset" : qualityLabels[static_cast<int>(graphics_.lod)],
+            scaleLabels[graphics_.renderScale], graphics_.bloom ? "On" : "Off", graphics_.reflections ? "On" : "Off"};
+        for (int i = 0; i < graphicsRows; ++i) {
+            const auto row = graphicsBox(i);
+            drawRow(row, focus_ == i);
+            ui.text(titles[i], {row.x + 20, row.y + 9}, 31, white, italic);
+            ui.text(details[i], {row.x + 21, row.y + 42}, 18, muted);
+            stamp(ui, "<", {908, row.y + 13, 39, 39}, false);
+            centered(ui, values[i], {1036, row.y + row.h * 0.5f}, 22, pale);
+            stamp(ui, ">", {1126, row.y + 13, 39, 39}, false);
+        }
+        stamp(ui, "Reset defaults", defaultsButton, focus_ == graphicsRows);
+        ui.text("Changes apply immediately", {284, 630}, 21, muted);
+    } else if (!credits_.empty()) {
+        for (int i = 0; i < static_cast<int>(credits_.size()); ++i) {
+            const auto row = creditBox(i);
+            drawRow(row, focus_ == i);
+            ui.text(credits_[i].front(), {row.x + 14, row.y + 11}, 22, creditPage_ == i ? white : muted);
+        }
+        ui.line({443, 240}, {443, 642}, 1, rail);
+        const auto& section = credits_[creditPage_];
+        ui.text(section.front(), {471, 238}, 45, white, italic);
+        float y = 309.0f;
+        for (std::size_t i = 1; i < section.size(); ++i) {
+            const bool link = section[i].rfind("https://", 0) == 0;
+            ui.text(section[i], {473, y}, link ? 17.0f : 19.0f, link ? pale : muted);
+            y += 31.0f;
+        }
+    } else {
+        ui.text("Audio credits unavailable", {96, 242}, 25, muted);
     }
 }
 
@@ -694,6 +890,7 @@ void Menu::drawGarage(UiDraw& ui, bool pad) const
     keyHint(ui, {72, 662}, pad ? "D-pad / Stick" : "Arrow keys", "Adjust");
     keyHint(ui, {272, 662}, pad ? "A" : "Enter", "Select");
     keyHint(ui, {403, 662}, pad ? "X" : "Delete", "Reset paint");
+    keyHint(ui, {829, 662}, pad ? "Look controls" : "Drag preview", "Rotate");
 }
 
 SceneView Menu::scene(const UiDraw& ui, int width, int height) const
@@ -799,54 +996,7 @@ void Menu::draw(UiDraw& ui, const Controls& controls) const
         icon(ui, Icon::Car, {104, 496}, uiAccentBlue);
         ui.text(spec.name, {133, 477}, 39, white, italic);
     } else if (screen_ == Screen::Settings) {
-        ui.text("Controls", {69, 104}, 65, ink, italic);
-        stamp(ui, "Gamepad", padTab, controllerBindings_);
-        stamp(ui, "Keyboard", keysTab, !controllerBindings_);
-        panel(ui, {72, 217, 454, 379});
-        const int first = firstBinding();
-        for (int i = first; i < first + 8; ++i) {
-            const UiBox row = option(i);
-            const bool focused = focus_ == i;
-            ui.roundedGradient(row, 7, focused ? glm::vec4(0.09f, 0.16f, 0.27f, 1.0f) : dark, ink);
-            if (focused) {
-                ui.rounded({row.x + 2, row.y + 6, 3, row.h - 12}, 1.5f, uiAccentBlue);
-                ui.bloom({row.x + 1, row.y + 6, 6, row.h - 12}, opacity(uiAccentBlue, 0.43f));
-            }
-            ui.text(actionLabels[i], {row.x + 13, row.y + 6}, 23, focused ? white : muted);
-            const auto binding = capture_ == i ? (controllerBindings_ ? "Move or press a control" : "Press a key")
-                                               : controls.binding(i, controllerBindings_);
-            const float width = ui.measure(binding, 17) + 20;
-            stamp(ui, binding, {row.x + row.w - width - 9, row.y + 6, width, 26}, focused);
-        }
-        ui.rect({510, 226, 3, 361}, opacity(pale, 0.21f));
-        ui.rect({510, 226.0f + first * 22.5f, 3, 181}, uiAccentBlue);
-        stamp(ui, "Reset defaults", defaultsButton, false);
-        if (capture_ >= 0) {
-            ui.text(controllerBindings_ ? "Hold B to cancel" : "Select Cancel to close", {269, 634}, 19, ink);
-        } else {
-            keyHint(ui, {269, 634}, pad ? "A" : "Enter", "Rebind");
-            keyHint(ui, {386, 634}, "Left / Right", "Switch profile");
-        }
-        panel(ui, {566, 168, 634, 428});
-        ui.text(controllerBindings_ ? "Wii U Pro Controller" : "Keyboard driving controls", {590, 181}, 38, white, italic);
-        ui.line({591, 228}, {1175, 228}, 1, rail);
-        if (controllerBindings_) {
-            controllerDiagram(ui, controls.binding(focus_, true));
-        } else {
-            constexpr std::array actions{Action::Accelerate, Action::Brake, Action::Left, Action::Right};
-            for (std::size_t i = 0; i < actions.size(); ++i) {
-                const int action = static_cast<int>(actions[i]);
-                const UiBox tile{618.0f + (i % 2) * 274.0f, 264.0f + (i / 2) * 112.0f, 252, 90};
-                ui.roundedGradient(tile, 11, ink, dark);
-                centered(ui, actionLabels[action], {tile.center().x, tile.y + 20}, 19, muted);
-                stamp(ui, controls.binding(action, false), {tile.x + 42, tile.y + 38, 168, 38}, action == focus_);
-            }
-        }
-        ui.line({591, 513}, {1175, 513}, 1, rail);
-        ui.text(actionLabels[focus_], {591, 528}, 29, white, italic);
-        const auto activeBinding = controls.binding(focus_, controllerBindings_);
-        const float keyWidth = ui.measure(activeBinding, 17) + 34;
-        stamp(ui, activeBinding, {1174 - keyWidth, 531, keyWidth, 32}, true);
+        drawSettings(ui, controls);
     }
     if (screen_ == Screen::Main || screen_ == Screen::Cars || screen_ == Screen::Maps) {
         keyHint(ui, {72, 662}, pad ? "D-pad / Stick" : "Arrow keys", "Select");

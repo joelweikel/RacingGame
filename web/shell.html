@@ -27,17 +27,6 @@
     #status:not([hidden]) { display: grid; }
     #status strong { font-size: clamp(2.5rem, 8vw, 6rem); font-style: italic; line-height: 1.07; }
     #loadMessage { color: #124fb8; }
-    #audioCredits {
-      position: absolute;
-      bottom: 0.6rem;
-      left: 50%;
-      transform: translateX(-50%);
-      padding: 0.16rem 0.55rem;
-      border-radius: 0.65rem;
-      color: #fff;
-      background: #141416;
-      font-size: 12px;
-    }
   </style>
 </head>
 <body>
@@ -47,7 +36,6 @@
       <span id="loadMessage">Loading…</span>
     </div>
     <canvas id="canvas" tabindex="0" aria-label="MMORP Racer"></canvas>
-    <a id="audioCredits" href="audio-credits.txt" target="_blank" rel="noopener" hidden>Audio credits</a>
   </main>
   <script>
     const canvas = document.getElementById('canvas');
@@ -80,7 +68,6 @@
       },
       onRuntimeInitialized() {
         Module.setStatus('');
-        document.getElementById('audioCredits').hidden = false;
         canvas.focus({ preventScroll: true });
       },
     };

@@ -88,6 +88,23 @@ void main() {
 }
 )glsl";
 
+constexpr const char* reflectionFragment = R"glsl(
+in vec2 clipPosition;
+uniform sampler2D uColorBuffer;
+uniform sampler2D uDepthBuffer;
+uniform vec2 uProjectionDepth;
+uniform float uLogRange;
+out vec4 pixelColor;
+
+void main() {
+    vec2 uv = clipPosition * 0.5 + 0.5;
+    float depth = texture(uDepthBuffer, uv).r;
+    float viewDepth = uProjectionDepth.y / (depth * 2.0 - 1.0 + uProjectionDepth.x);
+    float encoded = depth >= 1.0 ? 1.0 : log2(1.0 + viewDepth) / uLogRange;
+    pixelColor = vec4(texture(uColorBuffer, uv).rgb, encoded);
+}
+)glsl";
+
 constexpr const char* downsampleFragment = R"glsl(
 in vec2 clipPosition;
 uniform sampler2D uInput;
@@ -145,6 +162,7 @@ constexpr const char* presentFragment = R"glsl(
 in vec2 clipPosition;
 uniform sampler2D uScene;
 uniform sampler2D uGlow;
+uniform bool uBloom;
 uniform sampler2D uDepth;
 uniform sampler2D uFog;
 uniform bool uFogEnabled;
@@ -232,7 +250,8 @@ void main() {
         vec4 fog = upsampleFog(uv);
         scene = scene * fog.a + fog.rgb;
     }
-    vec3 color = scene + texture(uGlow, uv).rgb * 0.40 + flare(uv) + ring * vec3(0.24, 0.61, 0.85);
+    vec3 glow = uBloom ? texture(uGlow, uv).rgb * 0.40 : vec3(0.0);
+    vec3 color = scene + glow + flare(uv) + ring * vec3(0.24, 0.61, 0.85);
     float peak = max(color.r, max(color.g, color.b));
     vec3 mapped = max(vec3(0.0), color * compressPeak(peak) / max(peak, 0.001));
     if (uMenu) mapped /= compressPeak(1.0);
@@ -380,10 +399,12 @@ PostProcess::PostProcess()
         presentProgram_ = createShaderProgram(fullscreenVertex, presentFragment);
         const std::string fogCode = std::string(shadowSamplingGlsl) + campFogFragment;
         fogProgram_ = createShaderProgram(fullscreenVertex, fogCode.c_str());
+        reflectionProgram_ = createShaderProgram(fullscreenVertex, reflectionFragment);
     } catch (...) {
         glDeleteProgram(downsampleProgram_);
         glDeleteProgram(upsampleProgram_);
         glDeleteProgram(presentProgram_);
+        glDeleteProgram(fogProgram_);
         throw;
     }
     extractHighlights_ = glGetUniformLocation(downsampleProgram_, "uExtractHighlights");
@@ -394,6 +415,7 @@ PostProcess::PostProcess()
     menu_ = glGetUniformLocation(presentProgram_, "uMenu");
     glUseProgram(presentProgram_);
     glUniform1i(glGetUniformLocation(presentProgram_, "uGlow"), 1);
+    bloom_ = glGetUniformLocation(presentProgram_, "uBloom");
     glUniform1i(glGetUniformLocation(presentProgram_, "uDepth"), 2);
     glUniform1i(glGetUniformLocation(presentProgram_, "uFog"), 3);
     fogEnabledLocation_ = glGetUniformLocation(presentProgram_, "uFogEnabled");
@@ -407,13 +429,20 @@ PostProcess::PostProcess()
     fogNight_ = glGetUniformLocation(fogProgram_, "uNight");
     fogSteps_ = glGetUniformLocation(fogProgram_, "uSteps");
     fogDistantDensity_ = glGetUniformLocation(fogProgram_, "uDistantDensity");
+    glUseProgram(reflectionProgram_);
+    glUniform1i(glGetUniformLocation(reflectionProgram_, "uColorBuffer"), 0);
+    glUniform1i(glGetUniformLocation(reflectionProgram_, "uDepthBuffer"), 1);
+    reflectionDepth_ = glGetUniformLocation(reflectionProgram_, "uProjectionDepth");
+    reflectionLogRange_ = glGetUniformLocation(reflectionProgram_, "uLogRange");
 
     glGenFramebuffers(1, &sceneFrame_);
     glGenFramebuffers(1, &fogFrame_);
+    glGenFramebuffers(1, &reflectionFrame_);
     glGenFramebuffers(static_cast<GLsizei>(glowFrames_.size()), glowFrames_.data());
     glGenTextures(1, &scene_);
     glGenTextures(1, &depth_);
     glGenTextures(1, &fogTexture_);
+    glGenTextures(1, &reflectionTexture_);
     glGenTextures(static_cast<GLsizei>(glow_.size()), glow_.data());
     glGenVertexArrays(1, &array_);
 }
@@ -422,16 +451,19 @@ PostProcess::~PostProcess()
 {
     glDeleteFramebuffers(1, &sceneFrame_);
     glDeleteFramebuffers(1, &fogFrame_);
+    glDeleteFramebuffers(1, &reflectionFrame_);
     glDeleteFramebuffers(static_cast<GLsizei>(glowFrames_.size()), glowFrames_.data());
     glDeleteTextures(1, &scene_);
     glDeleteTextures(1, &depth_);
     glDeleteTextures(1, &fogTexture_);
+    glDeleteTextures(1, &reflectionTexture_);
     glDeleteTextures(static_cast<GLsizei>(glow_.size()), glow_.data());
     glDeleteVertexArrays(1, &array_);
     glDeleteProgram(downsampleProgram_);
     glDeleteProgram(upsampleProgram_);
     glDeleteProgram(presentProgram_);
     glDeleteProgram(fogProgram_);
+    glDeleteProgram(reflectionProgram_);
 }
 
 void PostProcess::resize(int width, int height)
@@ -441,10 +473,10 @@ void PostProcess::resize(int width, int height)
     glActiveTexture(GL_TEXTURE0);
 #ifdef __EMSCRIPTEN__
     // WebGL can render to RGBA16F with this extension. Use RGBA8 otherwise.
-    const bool hdr = emscripten_webgl_enable_extension(emscripten_webgl_get_current_context(), "EXT_color_buffer_float");
-    const GLint colorStorage = hdr ? GL_RGBA16F : GL_RGBA8;
+    hdr_ = emscripten_webgl_enable_extension(emscripten_webgl_get_current_context(), "EXT_color_buffer_float");
+    const GLint colorStorage = hdr_ ? GL_RGBA16F : GL_RGBA8;
     constexpr GLenum colorFormat = GL_RGBA;
-    const GLenum colorType = hdr ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE;
+    const GLenum colorType = hdr_ ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE;
 #else
     constexpr GLint colorStorage = GL_RGB16F;
     constexpr GLenum colorFormat = GL_RGB;
@@ -469,14 +501,47 @@ void PostProcess::resize(int width, int height)
     }
 }
 
-void PostProcess::begin(int width, int height)
+void PostProcess::begin(int width, int height, float scale)
 {
     fogEnabled_ = false;
-    if (width_ != width || height_ != height) {
-        resize(width, height);
+    outputWidth_ = width;
+    outputHeight_ = height;
+    const int sceneWidth = std::max(1, static_cast<int>(width * scale));
+    const int sceneHeight = std::max(1, static_cast<int>(height * scale));
+    if (width_ != sceneWidth || height_ != sceneHeight) {
+        resize(sceneWidth, sceneHeight);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, sceneFrame_);
     glViewport(0, 0, width_, height_);
+}
+
+GLuint PostProcess::captureReflections(const glm::mat4& projection, float logRange)
+{
+    // Capture the opaque surroundings before drawing the vehicle. Alpha stores log view depth.
+    const glm::ivec2 size{std::max(1, width_ / 2), std::max(1, height_ / 2)};
+    glBindFramebuffer(GL_FRAMEBUFFER, reflectionFrame_);
+    if (reflectionSize_ != size) {
+        reflectionSize_ = size;
+        glActiveTexture(GL_TEXTURE0);
+        allocateTexture(reflectionTexture_, hdr_ ? GL_RGBA16F : GL_RGBA8, GL_RGBA,
+                        hdr_ ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE, size.x, size.y, GL_NEAREST);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, reflectionTexture_, 0);
+        checkFramebuffer("Could not create car reflection framebuffer");
+    }
+    glDisable(GL_DEPTH_TEST);
+    glViewport(0, 0, size.x, size.y);
+    glBindVertexArray(array_);
+    glUseProgram(reflectionProgram_);
+    glUniform2f(reflectionDepth_, projection[2][2], projection[3][2]);
+    glUniform1f(reflectionLogRange_, logRange);
+    bindTexture(GL_TEXTURE0, scene_);
+    bindTexture(GL_TEXTURE1, depth_);
+    drawFullscreen();
+    glBindFramebuffer(GL_FRAMEBUFFER, sceneFrame_);
+    glViewport(0, 0, width_, height_);
+    glActiveTexture(GL_TEXTURE0);
+    glEnable(GL_DEPTH_TEST);
+    return reflectionTexture_;
 }
 
 void PostProcess::renderCampFog(const glm::mat4& clipToWorld, const glm::vec3& eye,
@@ -521,40 +586,43 @@ void PostProcess::drawFullscreen() const
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
-void PostProcess::present(const glm::vec3& sunScreen, float speedEffect, const glm::vec3& ripple, bool menu)
+void PostProcess::present(const glm::vec3& sunScreen, float speedEffect, const glm::vec3& ripple, bool menu, bool bloom)
 {
     glDisable(GL_DEPTH_TEST);
     glBindVertexArray(array_);
-    glUseProgram(downsampleProgram_);
-    for (std::size_t i = 0; i < glow_.size(); ++i) {
-        glViewport(0, 0, glowSizes_[i].x, glowSizes_[i].y);
-        glBindFramebuffer(GL_FRAMEBUFFER, glowFrames_[i]);
-        bindTexture(GL_TEXTURE0, i == 0 ? scene_ : glow_[i - 1]);
-        glUniform1i(extractHighlights_, i == 0 ? GL_TRUE : GL_FALSE);
-        drawFullscreen();
-    }
+    if (bloom) {
+        glUseProgram(downsampleProgram_);
+        for (std::size_t i = 0; i < glow_.size(); ++i) {
+            glViewport(0, 0, glowSizes_[i].x, glowSizes_[i].y);
+            glBindFramebuffer(GL_FRAMEBUFFER, glowFrames_[i]);
+            bindTexture(GL_TEXTURE0, i == 0 ? scene_ : glow_[i - 1]);
+            glUniform1i(extractHighlights_, i == 0 ? GL_TRUE : GL_FALSE);
+            drawFullscreen();
+        }
 
-    glUseProgram(upsampleProgram_);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE);
-    for (std::size_t i = glow_.size() - 1; i > 0; --i) {
-        glViewport(0, 0, glowSizes_[i - 1].x, glowSizes_[i - 1].y);
-        glBindFramebuffer(GL_FRAMEBUFFER, glowFrames_[i - 1]);
-        bindTexture(GL_TEXTURE0, glow_[i]);
-        drawFullscreen();
+        glUseProgram(upsampleProgram_);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+        for (std::size_t i = glow_.size() - 1; i > 0; --i) {
+            glViewport(0, 0, glowSizes_[i - 1].x, glowSizes_[i - 1].y);
+            glBindFramebuffer(GL_FRAMEBUFFER, glowFrames_[i - 1]);
+            bindTexture(GL_TEXTURE0, glow_[i]);
+            drawFullscreen();
+        }
+        glDisable(GL_BLEND);
     }
-    glDisable(GL_BLEND);
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, width_, height_);
+    glViewport(0, 0, outputWidth_, outputHeight_);
     glUseProgram(presentProgram_);
     bindTexture(GL_TEXTURE0, scene_);
     bindTexture(GL_TEXTURE1, glow_[0]);
     bindTexture(GL_TEXTURE2, depth_);
     bindTexture(GL_TEXTURE3, fogEnabled_ ? fogTexture_ : scene_);
     glUniform1i(fogEnabledLocation_, fogEnabled_);
+    glUniform1i(bloom_, bloom);
     glUniform3fv(sunScreen_, 1, glm::value_ptr(sunScreen));
-    glUniform1f(aspect_, static_cast<float>(width_) / height_);
+    glUniform1f(aspect_, static_cast<float>(outputWidth_) / outputHeight_);
     glUniform1f(speedEffect_, speedEffect);
     glUniform3fv(ripple_, 1, glm::value_ptr(ripple));
     glUniform1i(menu_, menu ? GL_TRUE : GL_FALSE);

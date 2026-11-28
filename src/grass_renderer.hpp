@@ -4,6 +4,7 @@
 #include "graphics.hpp"
 #include "lighting.hpp"
 #include "scenery_quality.hpp"
+#include "vehicle_lights.hpp"
 
 #include <map>
 
@@ -15,7 +16,7 @@ public:
     GrassRenderer& operator=(const GrassRenderer&) = delete;
 
     void update(const CampWorld& world, const glm::vec3& player);
-    void draw(const glm::mat4& viewProjection, const SceneShadows& shadows, glm::dvec2 origin,
+    void draw(const glm::mat4& viewProjection, const SceneShadows& shadows, const VehicleLights& lights, glm::dvec2 origin,
               float time, bool night, const std::vector<CarAsset::Exhaust>& outlets,
               const glm::mat4& body, float exhaustFlow) const;
 
@@ -40,6 +41,7 @@ private:
     GLuint program_ = 0;
     GLint viewProjection_ = -1;
     ShadowSampling shadows_;
+    VehicleLightUniforms vehicleLights_;
     GLint wind_ = -1;
     GLint night_ = -1;
     GLint jetOrigins_ = -1;

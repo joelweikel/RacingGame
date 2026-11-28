@@ -354,11 +354,14 @@ void smokeTest(const CarAsset& asset, Renderer& renderer, TireEffects& effects, 
         throw std::runtime_error("OpenGL scene or dashboard framebuffer check failed");
     }
 
-    const auto capture = [&](const CarState& state, const ChaseCamera& view, bool night) {
-        renderer.render(asset, state, view, effects, width, height, night);
+    const auto readFrame = [&]() {
         std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width) * height * 4);
         glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
         return pixels;
+    };
+    const auto capture = [&](const CarState& state, const ChaseCamera& view, bool night) {
+        renderer.render(asset, state, view, effects, width, height, night);
+        return readFrame();
     };
     ChaseCamera effectView;
     effectView.yaw = -0.60f;
@@ -409,6 +412,25 @@ void smokeTest(const CarAsset& asset, Renderer& renderer, TireEffects& effects, 
     if (glGetError() != GL_NO_ERROR || redLightPixels(day, dayBrake) < 12 ||
         redLightPixels(day, night) < 12 || redLightPixels(night, nightBrake) < 12) {
         throw std::runtime_error("Rear running or brake lights did not illuminate in the correct modes");
+    }
+
+    CarAsset unlit = asset;
+    unlit.headlights.fill(glm::vec3(1000.0f));
+    renderer.render(unlit, parked, ChaseCamera{}, effects, width, height, true);
+    const auto noHeadlightSpill = readFrame();
+    int illuminatedRoad = 0, brakeSpill = 0;
+    for (int x = width * 2 / 5; x < width * 3 / 5; ++x) {
+        for (int y = height * 3 / 5; y < height * 3 / 4; ++y) {
+            const auto i = (static_cast<std::size_t>(y) * width + x) * 4;
+            illuminatedRoad += night[i] >= noHeadlightSpill[i] + 14;
+        }
+        for (int y = height / 14; y < height / 5; ++y) {
+            const auto i = (static_cast<std::size_t>(y) * width + x) * 4;
+            brakeSpill += nightBrake[i] >= night[i] + 14;
+        }
+    }
+    if (illuminatedRoad < 70 || brakeSpill < 70) {
+        throw std::runtime_error("Headlights or brake lights failed to illuminate the road");
     }
 
     renderer.render(asset, parked, ChaseCamera{}, effects, width / 2, height / 2);
@@ -715,7 +737,7 @@ class Game {
 public:
     Game(Window gameWindow, const std::filesystem::path& assetDirectory, CarAsset initialAsset)
         : window(std::move(gameWindow)), assets(assetDirectory), controls(window.get()),
-          menu(initialAsset.model, std::filesystem::is_regular_file(assets / carSpec(CarModel::Gale).assetFile)),
+          menu(initialAsset.model, std::filesystem::is_regular_file(assets / carSpec(CarModel::Gale).assetFile), assets),
           ui(assets), audio(assets)
     {
         const auto i = static_cast<std::size_t>(initialAsset.model);
@@ -768,6 +790,7 @@ public:
         const auto model = menu.displayedCar();
         const std::size_t i = static_cast<std::size_t>(model);
         const CarAsset& asset = sceneAsset(model, i);
+        renderers[i]->setGraphics(menu.graphics());
         if (enteringGarage) menu.setGarageAsset(asset);
         const DriveInput input = driving ? controls.drive() : DriveInput{};
         if (driving) {
@@ -796,6 +819,7 @@ public:
         ChaseCamera orbit;
         orbit.yaw = 2.34f + 0.34f * std::sin(menu.time() * 0.66f);
         orbit.pitch = -0.065f + 0.04f * std::sin(menu.time() * 0.81f);
+        if (menu.screen() == Screen::Garage) orbit = menu.garageCamera();
         if (view.titleDrift) {
             titleDrift.update(asset, dt);
             renderers[i]->render(asset, titleDrift.car, titleDrift.camera(), titleDrift.effects, width, height, false, view);
@@ -820,7 +844,7 @@ public:
 private:
     void updateTitle() const
     {
-        const std::array<const char*, 8> sections{"", "Main Menu", "Car Select", "Map Select", "Controls", "", "Paused", "Garage"};
+        const std::array<const char*, 8> sections{"", "Main Menu", "Car Select", "Map Select", "Settings", "", "Paused", "Garage"};
         std::string title = sections[static_cast<std::size_t>(lastScreen)];
         if (lastScreen == Screen::Drive) {
             title = std::string(carSpec(menu.playerCar()).name) + " | " + std::string(courseName(menu.course()));

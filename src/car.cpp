@@ -192,7 +192,8 @@ Surface readSurface(const cgltf_material* material, const glm::vec3& fallbackCol
         surface.lightControl = brake ? LightControl::Brake : LightControl::Night;
     } else if (name == "drl") {
         surface.color = glm::vec3(0.0f);
-        surface.emission = glm::vec3(std::max(3.0f, strength));
+        surface.emission = glm::vec3(1.0f, 0.95f, 0.88f) * std::max(3.0f, strength);
+        surface.lightControl = LightControl::Headlamp;
     } else if (name == "metal") {
         surface.color = glm::vec3(0.25f, 0.28f, 0.32f);
         surface.metallic = 1.0f;
@@ -461,6 +462,34 @@ CarAsset readCar(const cgltf_data& data, CarModel model)
     for (MeshPart& part : car.body) {
         part.mirrorAcrossBody = halfBody;
     }
+    const auto lamps = [&](LightControl control, float axleOffset) {
+        const bool frontLamp = control == LightControl::Headlamp;
+        const auto& hub = car.hubs[frontLamp ? 0 : 2];
+        const glm::vec3 fallback(hub.x + axleOffset, hub.y + 0.28f, std::abs(hub.z) * 0.82f);
+        std::array<glm::vec3, 2> centers{fallback, mirrorHub(fallback)};
+        for (std::size_t side = 0; side < centers.size(); ++side) {
+            glm::vec3 min(std::numeric_limits<float>::infinity()), max(-min);
+            for (const auto& part : car.body) {
+                if (part.surface.lightControl != control) continue;
+                for (const auto& vertex : part.vertices) {
+                    const auto p = vertex.position;
+                    if ((p.z >= 0.0f) != (side == 0)) continue;
+                    min = glm::min(min, p);
+                    max = glm::max(max, p);
+                }
+            }
+            if (min.x <= max.x) centers[side] = (min + max) * 0.5f;
+        }
+        if (halfBody) {
+            if (std::abs(bodyMinZ) < centerlineTolerance) centers[1] = mirrorHub(centers[0]);
+            else centers[0] = mirrorHub(centers[1]);
+        }
+        // Move the cone origins clear of their housings.
+        for (auto& center : centers) center.x += frontLamp ? 0.10f : -0.08f;
+        return centers;
+    };
+    car.headlights = lamps(LightControl::Headlamp, 0.59f);
+    car.taillights = lamps(LightControl::Night, -0.61f);
     const auto append = [&](const cgltf_node& node, CarPart visibility) {
         if (&node != wheel) appendParts(node, bodySpace, car.body, visibility);
     };

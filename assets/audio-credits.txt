@@ -5,7 +5,12 @@ Turbo diesel engine
   https://freesound.org/people/AugustSandberg/sounds/237292/
   RacingGame edited a two-second excerpt into a filtered, crossfaded mono 24 kHz PCM loop.
 
-Gale engine recordings
+Gale idle recording
+  Ferrari_motor_idle by jtvdb, a field recording licensed under CC0 1.0.
+  https://freesound.org/people/jtvdb/sounds/857147/
+  RacingGame filtered, edited, and crossfaded the idle loop in mono 24 kHz PCM.
+
+Gale high-RPM recordings
   Ferrari 458 Italia and Ferrari F430 (2010), recorded by Edvvc at Goodwood.
   https://commons.wikimedia.org/wiki/File:Ferrari_458_Italia.ogg
   https://commons.wikimedia.org/wiki/File:Ferrari_F430_(2010).ogg

@@ -56,11 +56,12 @@ public:
     PostProcess(const PostProcess&) = delete;
     PostProcess& operator=(const PostProcess&) = delete;
 
-    void begin(int width, int height);
+    void begin(int width, int height, float scale);
+    GLuint captureReflections(const glm::mat4& projection, float logRange);
     void renderCampFog(const glm::mat4& clipToWorld, const glm::vec3& eye, const SceneShadows& shadows,
                        const glm::vec3& lightDirection, glm::dvec2 origin, float groundHeight,
                        float time, bool night, float resolutionScale, int steps, float viewDistance);
-    void present(const glm::vec3& sunScreen, float speedEffect, const glm::vec3& ripple, bool menu);
+    void present(const glm::vec3& sunScreen, float speedEffect, const glm::vec3& ripple, bool menu, bool bloom);
 
 private:
     void resize(int width, int height);
@@ -68,6 +69,7 @@ private:
 
     int width_ = 0;
     int height_ = 0;
+    int outputWidth_ = 0, outputHeight_ = 0;
     static constexpr std::size_t bloomLevels = 5;
     GLuint scene_ = 0;
     GLuint depth_ = 0;
@@ -82,9 +84,17 @@ private:
     GLuint fogProgram_ = 0;
     GLuint fogTexture_ = 0;
     GLuint fogFrame_ = 0;
+    GLuint reflectionProgram_ = 0;
+    GLuint reflectionTexture_ = 0;
+    GLuint reflectionFrame_ = 0;
+    glm::ivec2 reflectionSize_{0};
+    GLint reflectionDepth_ = -1;
+    GLint reflectionLogRange_ = -1;
+    bool hdr_ = true;
     glm::ivec2 fogSize_{0};
     bool fogEnabled_ = false;
     GLint fogEnabledLocation_ = -1;
+    GLint bloom_ = -1;
     GLint fogClip_ = -1;
     GLint fogEye_ = -1;
     ShadowSampling fogShadows_;

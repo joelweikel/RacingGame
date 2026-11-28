@@ -121,6 +121,11 @@ uniform vec2 uAlphaMask;
 uniform bool uCampGround;
 uniform bool uPaint;
 uniform float uGroundHeight;
+uniform bool uReceivesVehicleLights;
+uniform bool uSceneReflections;
+uniform sampler2D uReflectionScene;
+uniform mat4 uViewProjection;
+uniform float uReflectionLogRange;
 
 out vec4 pixelColor;
 
@@ -161,8 +166,41 @@ vec3 paintEnvironment(vec3 reflection) {
         float line = (1.0 - smoothstep(0.005, 0.03, min(distanceToLine.x, distanceToLine.y))) *
                      (1.0 - smoothstep(3.0, 12.0, distanceToGround));
         ground += line * vec3(0.10, 0.13, 0.13);
+    } else if (uCourse == 1) {
+        float t = max(0.0, worldPosition.y - uGroundHeight) / max(0.02, -reflection.y);
+        vec2 p = worldPosition.xz + reflection.xz * t - vec2(0.0, uOvalDimensions.y);
+        vec2 turn = vec2(max(abs(p.x) - uOvalDimensions.x, 0.0), p.y);
+        float edge = abs(length(turn) - uOvalDimensions.y);
+        ground = mix(vec3(0.10, 0.12, 0.14), ground,
+                     smoothstep(uOvalDimensions.z - 0.28, uOvalDimensions.z + 0.28, edge));
     }
     return mix(skyRadiance(reflection), ground * (uNight ? 0.16 : 1.0), groundMix);
+}
+
+vec4 sceneReflection(vec3 normal, vec3 direction) {
+    vec3 start = worldPosition + normal * 0.035;
+    float previousDistance = 0.0;
+    for (int i = 1; i <= 13; ++i) {
+        float stepIndex = float(i);
+        float distance = stepIndex * (0.11 + stepIndex * 0.145);
+        vec4 clip = uViewProjection * vec4(start + direction * distance, 1.0);
+        if (clip.w <= 0.0) break;
+        vec2 uv = 0.5 + 0.5 * clip.xy / clip.w;
+        float edge = min(min(uv.x, uv.y), 1.0 - max(uv.x, uv.y));
+        if (edge < 0.0) break;
+        vec4 samplePoint = textureLod(uReflectionScene, uv, 0.0);
+        float sceneDepth = exp2(samplePoint.a * uReflectionLogRange) - 1.0;
+        float delta = clip.w - sceneDepth;
+        float thickness = 0.16 + (distance - previousDistance) * 0.86 + sceneDepth * 0.025;
+        if (samplePoint.a < 0.998 && delta >= 0.0 && delta < thickness) {
+            float fade = smoothstep(0.0, 0.10, edge) *
+                         (1.0 - smoothstep(thickness * 0.54, thickness, delta)) *
+                         (1.0 - smoothstep(12.0, 26.0, distance));
+            return vec4(samplePoint.rgb, fade);
+        }
+        previousDistance = distance;
+    }
+    return vec4(0.0);
 }
 
 void main() {
@@ -194,7 +232,10 @@ void main() {
             float checker = mod(floor(oval.x * 5.0) + floor(oval.y * 3.0), 2.0);
             asphalt = mix(asphalt, mix(vec3(0.22), vec3(0.78), checker), start);
         }
-        asphalt *= uNight ? vec3(0.19, 0.25, 0.32) : vec3(mix(0.44, 1.0, sunlight(vec3(0.0, 1.0, 0.0))));
+        vec3 groundNormal = vec3(0, 1, 0);
+        vec3 illumination = uNight ? vec3(0.16, 0.22, 0.30) : vec3(mix(0.44, 1.0, sunlight(groundNormal)));
+        if (uReceivesVehicleLights) illumination += vehicleLighting(worldPosition, groundNormal);
+        asphalt *= illumination;
         pixelColor = vec4(mix(asphalt, skyRadiance(-view), fog), 1.0);
         return;
     }
@@ -244,13 +285,21 @@ void main() {
         float coatFresnel = 0.04 + 0.96 * fresnel;
         vec3 coat = paintEnvironment(reflection);
         if (!uMenuLight) {
-            coat += direct * coatSun * (uNight ? vec3(0.35, 0.42, 0.53) : vec3(4.5, 3.9, 2.9));
+            if (uSceneReflections) {
+                vec4 local = sceneReflection(normal, reflection);
+                coat = mix(coat, local.rgb, local.a * 0.86);
+            }
+            float lightAngle = max(dot(normal, uSunDirection), 0.0);
+            float sunShoulder = pow(max(dot(reflection, uSunDirection), 0.0), 36.0);
+            vec3 sunColor = uNight ? vec3(0.26, 0.36, 0.60) : vec3(1.0, 0.87, 0.69);
+            coat += direct * lightAngle * sunColor * (0.68 * sunShoulder + 11.0 * coatSun);
         }
         shaded = shaded * (1.0 - clearcoat * coatFresnel) + coat * clearcoat * coatFresnel;
     } else {
         shaded += skyRadiance(reflection) * clearcoat * (0.085 + 0.18 * fresnel);
         shaded += clearcoat * direct * coatSun * vec3(1.85, 1.55, 1.18);
     }
+    if (uReceivesVehicleLights) shaded += albedo * vehicleLighting(worldPosition, normal);
     shaded += uEmissive;
     pixelColor = vec4(mix(shaded, skyRadiance(-view), fog), 1.0);
 }
@@ -419,11 +468,16 @@ MeshPart makeCampProp(CampProp kind)
 
 } // namespace
 
+void ChaseCamera::orbit(const glm::vec2& delta)
+{
+    yaw = std::remainder(yaw - delta.x * 0.006f, 2.0f * pi);
+    pitch = std::clamp(pitch + delta.y * 0.0045f, -0.29f, 0.68f);
+}
+
 void ChaseCamera::update(const glm::vec2& mouseDelta, bool looking, float dt)
 {
     if (looking) {
-        yaw = std::remainder(yaw - mouseDelta.x * 0.006f, 2.0f * pi);
-        pitch = std::clamp(pitch + mouseDelta.y * 0.0045f, -0.29f, 0.68f);
+        orbit(mouseDelta);
         recenterDelay = 0.65f;
         return;
     }
@@ -518,8 +572,8 @@ void Renderer::MeshBuffer::drawInstances(GLuint buffer, GLsizei count) const
 
 class Renderer::CampRender {
 public:
-    explicit CampRender(const std::filesystem::path& assets)
-        : quality_(sceneryQuality()), grass_(quality_)
+    CampRender(const std::filesystem::path& assets, const SceneryQuality& quality)
+        : quality_(quality), grass_(quality_)
     {
         if (quality_.distantShadowExtent > 0.0f) {
             distantShadow_ = std::make_unique<SunShadow>(quality_.shadowResolution);
@@ -628,8 +682,9 @@ public:
                 if (prop.kind == CampProp::Tree) {
                     if (apparentHeight < quality_.minTreePixels) continue;
                     const bool near = quality_.nearestTreeLod == 0 && apparentHeight > quality_.nearTreePixels;
-                    const std::size_t lod = near ? 0 : apparentHeight > quality_.midTreePixels ? 1 : 2;
-                    if (!lodMeshes_[lod].empty()) {
+                    std::size_t lod = near ? 0 : apparentHeight > quality_.midTreePixels ? 1 : 2;
+                    while (lod < lodMeshes_.size() && lodMeshes_[lod].empty()) ++lod;
+                    if (lod < lodMeshes_.size()) {
                         const float scale = size.y / treeHeight_;
                         centerPoint.y -= size.y * 0.5f + treeBase_ * scale;
                         instances_[propCount + lod].push_back({centerPoint, glm::vec3(scale)});
@@ -734,7 +789,7 @@ private:
         std::vector<CampPlacement> props;
     };
     static constexpr auto propCount = static_cast<std::size_t>(CampProp::Count);
-    const SceneryQuality& quality_;
+    const SceneryQuality quality_;
     GrassRenderer grass_;
     std::unique_ptr<SunShadow> distantShadow_;
     std::uint32_t seed_ = 0;
@@ -750,7 +805,8 @@ private:
 };
 
 Renderer::Renderer(const CarAsset& asset, const std::filesystem::path& assets)
-    : ground_(makeGround(asset.groundHeight)), assets_(assets), shadow_(sceneryQuality().shadowResolution)
+    : ground_(makeGround(asset.groundHeight)), assets_(assets), quality_(sceneryQuality()),
+      shadow_(std::make_unique<SunShadow>(quality_.shadowResolution))
 {
     body_.reserve(asset.body.size());
     for (const MeshPart& part : asset.body) {
@@ -761,7 +817,7 @@ Renderer::Renderer(const CarAsset& asset, const std::filesystem::path& assets)
         wheel_.emplace_back(part);
     }
 
-    const std::string materialCode = std::string(skyLighting) + shadowSamplingGlsl + materialFragment;
+    const std::string materialCode = std::string(skyLighting) + shadowSamplingGlsl + vehicleLightingGlsl + materialFragment;
     const std::string skyCode = std::string(skyLighting) + skyFragment;
     program_ = createShaderProgram(vertexShader, materialCode.c_str());
     try {
@@ -779,6 +835,7 @@ Renderer::Renderer(const CarAsset& asset, const std::filesystem::path& assets)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glUseProgram(program_);
     glUniform1i(glGetUniformLocation(program_, "uBaseColor"), 4);
+    glUniform1i(glGetUniformLocation(program_, "uReflectionScene"), 6);
     skyClipToWorld_ = glGetUniformLocation(skyProgram_, "uClipToWorld");
     skyNight_ = glGetUniformLocation(skyProgram_, "uNight");
     skyCamp_ = glGetUniformLocation(skyProgram_, "uCamp");
@@ -791,6 +848,10 @@ Renderer::Renderer(const CarAsset& asset, const std::filesystem::path& assets)
     viewProjection_ = glGetUniformLocation(program_, "uViewProjection");
     color_ = glGetUniformLocation(program_, "uColor");
     paint_ = glGetUniformLocation(program_, "uPaint");
+    receivesVehicleLights_ = glGetUniformLocation(program_, "uReceivesVehicleLights");
+    sceneReflections_ = glGetUniformLocation(program_, "uSceneReflections");
+    reflectionLogRange_ = glGetUniformLocation(program_, "uReflectionLogRange");
+    vehicleLights_.initialize(program_);
     groundHeight_ = glGetUniformLocation(program_, "uGroundHeight");
     surface_ = glGetUniformLocation(program_, "uSurface");
     emissive_ = glGetUniformLocation(program_, "uEmissive");
@@ -828,10 +889,11 @@ void Renderer::draw(const MeshBuffer& mesh, const glm::mat4& model, bool night, 
     glActiveTexture(GL_TEXTURE0);
     glUniformMatrix4fv(model_, 1, GL_FALSE, glm::value_ptr(model));
     const Surface& surface = mesh.surface();
-    const bool emitting = surface.lightControl == LightControl::Always ||
+    const bool headlamp = surface.lightControl == LightControl::Headlamp;
+    const bool emitting = headlamp || surface.lightControl == LightControl::Always ||
                           (surface.lightControl == LightControl::Night && night) ||
                           (surface.lightControl == LightControl::Brake && braking);
-    const glm::vec3 emission = emitting ? surface.emission : glm::vec3(0.0f);
+    const glm::vec3 emission = emitting ? surface.emission * (headlamp && night ? 1.65f : 1.0f) : glm::vec3(0.0f);
     glUniform3fv(color_, 1, glm::value_ptr(surface.paint && paint ? *paint : surface.color));
     glUniform1i(paint_, surface.paint);
     glUniform3fv(emissive_, 1, glm::value_ptr(emission));
@@ -839,6 +901,19 @@ void Renderer::draw(const MeshBuffer& mesh, const glm::mat4& model, bool night, 
     glUniform4f(surface_, surface.metallic, surface.roughness, surface.clearcoat, surface.opacity);
     if (instances != 0) mesh.drawInstances(instances, count);
     else mesh.draw();
+}
+
+void Renderer::setGraphics(const GraphicsSettings& graphics)
+{
+    if (graphics.preset != graphics_.preset || graphics.lod != graphics_.lod) {
+        const auto quality = sceneryQuality(graphics.preset, graphics.lod);
+        camp_.reset();
+        if (quality.shadowResolution != quality_.shadowResolution) {
+            shadow_ = std::make_unique<SunShadow>(quality.shadowResolution);
+        }
+        quality_ = quality;
+    }
+    graphics_ = graphics;
 }
 
 void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCamera& camera,
@@ -866,7 +941,7 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     const float fov = 56.0f + 5.5f * camera.speedEffect;
     constexpr float menuAspect = 1280.0f / 720.0f;
     if (camp) {
-        if (!camp_) camp_ = std::make_unique<CampRender>(assets_);
+        if (!camp_) camp_ = std::make_unique<CampRender>(assets_, quality_);
     } else if (scene.course != Course::DerelictCamp) {
         camp_.reset();
     }
@@ -883,11 +958,21 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     }
     const glm::mat4 viewProjection = projection * view;
     if (camp) {
-        camp_->update(*camp, car.position, eye, projection[1][1] * height * 0.5f);
+        camp_->update(*camp, car.position, eye, projection[1][1] * height * graphics_.resolutionScale() * 0.5f);
     }
 
     const glm::mat4 baseModel = vehicleTransform(asset, car, camp != nullptr);
     const glm::mat4 bodyModel = bodyTransform(asset, car, baseModel);
+    const bool castLights = !scene.menu && (night || car.brakeLights);
+    VehicleLights lamps;
+    if (castLights) {
+        lamps.direction = glm::normalize(glm::mat3(bodyModel) * glm::vec3(1.0f, -0.045f, 0.0f));
+        for (std::size_t side = 0; side < asset.headlights.size(); ++side) {
+            lamps.lamps[side] = {glm::vec3(bodyModel * glm::vec4(asset.headlights[side], 1.0f)), night ? 1.0f : 0.0f};
+            lamps.lamps[side + 2] = {glm::vec3(bodyModel * glm::vec4(asset.taillights[side], 1.0f)),
+                                   (night ? 0.30f : 0.0f) + (car.brakeLights ? (night ? 0.82f : 0.28f) : 0.0f)};
+        }
+    }
     const glm::mat4 mirrored = glm::scale(bodyModel, glm::vec3(1.0f, 1.0f, -1.0f));
     std::array<glm::mat4, 4> wheelModels;
     for (std::size_t i = 0; i < asset.hubs.size(); ++i) {
@@ -916,7 +1001,7 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
         }
     };
     SceneShadows lighting;
-    lighting.nearDepth = shadow_.depthTexture();
+    lighting.nearDepth = shadow_->depthTexture();
     if ((!night || camp) && !scene.menu) {
         const auto cast = [&](SunShadow& map, float extent, bool distant) {
             const auto matrix = map.begin(car.position, lightDirection, extent);
@@ -938,7 +1023,7 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
             map.end();
             return matrix;
         };
-        lighting.nearMatrix = cast(shadow_, camp ? camp_->quality().shadowExtent : 12.0f, false);
+        lighting.nearMatrix = cast(*shadow_, camp ? camp_->quality().shadowExtent : 12.0f, false);
         if (camp) {
             if (auto* distant = camp_->distantShadow()) {
                 lighting.distantMatrix = cast(*distant, camp_->quality().distantShadowExtent, true);
@@ -947,7 +1032,7 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
         }
     }
 
-    post_.begin(width, height);
+    post_.begin(width, height, graphics_.resolutionScale());
     glClear(GL_DEPTH_BUFFER_BIT);
     glDisable(GL_DEPTH_TEST);
     glUseProgram(skyProgram_);
@@ -963,12 +1048,18 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glEnable(GL_DEPTH_TEST);
     if (scene.menu && !scene.showCar) {
-        post_.present(glm::vec3(0.0f), 0.0f, scene.ripple, scene.menu);
+        post_.present(glm::vec3(0.0f), 0.0f, scene.ripple, scene.menu, graphics_.bloom);
         return;
     }
 
     glUseProgram(program_);
     shadows_.bind(lighting);
+    vehicleLights_.bind(lamps);
+    glUniform1i(receivesVehicleLights_, castLights);
+    glUniform1i(sceneReflections_, GL_FALSE);
+    glActiveTexture(GL_TEXTURE6);
+    glBindTexture(GL_TEXTURE_2D, whiteTexture_);
+    glActiveTexture(GL_TEXTURE0);
     glUniform1i(night_, night ? GL_TRUE : GL_FALSE);
     glUniform1i(menuLight_, scene.menu ? GL_TRUE : GL_FALSE);
     glUniform1i(campGround_, GL_FALSE);
@@ -995,7 +1086,7 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
         const auto& outlets = car.setup.diesel ? asset.dieselExhaust : asset.gasolineExhaust;
         const float rpmFraction = (car.rpm - idleRpm) / (powertrainSpec(asset.model, car.setup.diesel).torqueCurve.back().rpm - idleRpm);
         const float exhaustFlow = car.engineLoad * glm::smoothstep(0.08f, 0.8f, rpmFraction);
-        camp_->grass().draw(viewProjection, lighting, camp->origin(), scene.time, night, outlets, bodyModel, exhaustFlow);
+        camp_->grass().draw(viewProjection, lighting, lamps, camp->origin(), scene.time, night, outlets, bodyModel, exhaustFlow);
         glUseProgram(program_);
     } else if (!scene.menu) {
         glUniform1i(groundPass_, GL_TRUE);
@@ -1008,6 +1099,19 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
         glUseProgram(program_);
     }
     glUniform1i(groundPass_, GL_FALSE);
+    glUniform1i(receivesVehicleLights_, GL_FALSE);
+
+    if (!scene.menu && graphics_.reflections) {
+        const float logRange = std::log2(1.0f + viewDistance);
+        const auto texture = post_.captureReflections(projection, logRange);
+        glUseProgram(program_);
+        shadows_.bind(lighting);
+        glActiveTexture(GL_TEXTURE6);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glActiveTexture(GL_TEXTURE0);
+        glUniform1i(sceneReflections_, GL_TRUE);
+        glUniform1f(reflectionLogRange_, logRange);
+    }
 
     const glm::vec3 srgb = glm::vec3(glm::max(car.setup.paint, glm::ivec3(0))) / 255.0f;
     const glm::vec3 linearPaint = glm::mix(srgb / 12.92f, glm::pow((srgb + 0.055f) / 1.055f, glm::vec3(2.4f)),
@@ -1052,5 +1156,5 @@ void Renderer::render(const CarAsset& asset, const CarState& car, const ChaseCam
     if (!night && !scene.menu && projectedSun.w > 0.0f) {
         sunScreen = glm::vec3(glm::vec2(projectedSun) * (0.5f / projectedSun.w) + 0.5f, 1.0f);
     }
-    post_.present(sunScreen, camera.speedEffect, scene.ripple, scene.menu);
+    post_.present(sunScreen, camera.speedEffect, scene.ripple, scene.menu, graphics_.bloom);
 }

@@ -69,6 +69,7 @@ constexpr std::array<float, 4> recordedRpm{2977.0f, 4438.0f, 6040.0f, 7252.0f};
 constexpr std::array<const char*, 4> galeRecordings{
     "gale-2977.wav", "gale-4438.wav", "gale-6040.wav", "gale-7252.wav"
 };
+constexpr float galeIdleRecordedRpm = 1230.0f;
 
 } // namespace
 
@@ -81,10 +82,11 @@ struct GameAudio::Playback {
 
     EngineSound engine;
     std::array<Loop, galeRecordings.size()> recordings;
-    Loop tires, dieselRecording;
+    Loop galeIdle, tires, dieselRecording;
     bool hasRecordings = false;
     float rpm = idleRpm, load = 0.0f, cut = 1.0f, slip = 0.0f, speed = 0.0f, gain = 0.0f;
     float recordingBody = 0.0f, road = 0.0f, roadHigh = 0.0f;
+    float galeIdleBody = 0.0f;
     float dieselBody = 0.0f, turbo = 0.0f, boost = 0.0f, turboPhase = 0.0f;
     std::array<float, 2> dc{};
     float lastThrottle = 0.0f;
@@ -95,6 +97,7 @@ struct GameAudio::Playback {
     explicit Playback(const std::filesystem::path& assets)
     {
         for (std::size_t i = 0; i < recordings.size(); ++i) recordings[i].load(assets / galeRecordings[i]);
+        galeIdle.load(assets / "gale-1230.wav");
         hasRecordings = std::all_of(recordings.begin(), recordings.end(), [](const Loop& loop) {
             return !loop.waveform.empty();
         });
@@ -196,13 +199,23 @@ struct GameAudio::Playback {
                                       turbo * turbo * (0.024f + 0.022f * boost);
                 const float rush = (roadHigh - road) * turbo * (0.045f * load + 0.025f * (1.0f - load));
                 motor = {combustion + whistle + rush, combustion + whistle * 0.92f + rush * 0.82f};
-            } else if (flatPlane && hasRecordings) {
-                const float recording = recordedExhaust();
-                recordingBody += (recording - recordingBody) * mix(0.072f, 0.48f, load);
-                const float recordingGain = smooth(1680.0f, 3100.0f, rpm) * mix(0.51f, 0.91f, load);
-                for (auto& channel : motor) {
-                    channel = mix(channel, (recordingBody + (recording - recordingBody) * load * 0.55f) *
-                        (0.40f + 1.17f * load) * cut, recordingGain);
+            } else if (flatPlane) {
+                if (hasRecordings) {
+                    const float recording = recordedExhaust();
+                    recordingBody += (recording - recordingBody) * mix(0.072f, 0.48f, load);
+                    const float recordingGain = smooth(1680.0f, 3100.0f, rpm) * mix(0.51f, 0.91f, load);
+                    for (auto& channel : motor) {
+                        channel = mix(channel, (recordingBody + (recording - recordingBody) * load * 0.55f) *
+                            (0.40f + 1.17f * load) * cut, recordingGain);
+                    }
+                }
+                if (rpm < 3100.0f && !galeIdle.waveform.empty()) {
+                    const float recording = galeIdle.sample(rpm / galeIdleRecordedRpm);
+                    galeIdleBody += (recording - galeIdleBody) * mix(0.065f, 0.35f, load);
+                    const float exhaust = (galeIdleBody + (recording - galeIdleBody) * load * 0.45f) *
+                                          (0.50f + 0.79f * load) * cut;
+                    const float idleMix = 0.94f * (1.0f - smooth(1700.0f, 3100.0f, rpm));
+                    for (auto& channel : motor) channel = mix(channel, exhaust, idleMix);
                 }
             }
 
